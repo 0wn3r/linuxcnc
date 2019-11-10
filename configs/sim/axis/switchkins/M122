@@ -1,0 +1,17 @@
+#!/usr/bin/tclsh
+# convert arg to integer and set hal pin
+set prog     [file tail $::argv0]
+set pvalue   [lindex    $::argv 0]
+set p_ivalue [expr int($pvalue)]
+
+switch -exact $p_ivalue {
+  0 { #allowed: trivkins type }
+  1 { #allowed:    XYZAC type }
+  default {puts "$prog: bad P value <$pvalue>"
+           exit 1
+  }
+}
+
+set cmd "halcmd setp motion.switchkins-type $p_ivalue"
+puts "$prog: $cmd"
+eval exec    $cmd

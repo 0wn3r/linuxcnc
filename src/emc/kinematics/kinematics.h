@@ -101,4 +101,15 @@ extern int kinematicsHome(struct EmcPose * world,
 
 extern KINEMATICS_TYPE kinematicsType(void);
 
+extern int kinematicsSwitchable();
+extern int kinematicsSwitch(int switchable_kins_type);
+//NOTE: switchable kinematics may require Interp::Synch
+//      before/after invoking kinematicsSwitch()
+
+#define KINS_NOT_SWITCHABLE \
+int kinematicsSwitchable() {return 0;} \
+int kinematicsSwitch(int switchkins_type) {return 0;} \
+EXPORT_SYMBOL(kinematicsSwitchable); \
+EXPORT_SYMBOL(kinematicsSwitch);
+
 #endif

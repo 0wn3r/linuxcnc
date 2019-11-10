@@ -1,0 +1,8 @@
+; sync, setp motion.switchkins-type, sync again
+o<kswitch>sub
+  #<kmode> = #1   ;0==>trivkins, 1==>xyzac
+  (debug, kswitch:#<kmode>)
+  M66  E0 L0      ;force synch
+  M122 P#<kmode>  ;convert to integer and setp
+  M66  E0 L0      ;force synch
+o<kswitch>endsub

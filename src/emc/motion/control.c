@@ -12,6 +12,10 @@
 *
 * Copyright (c) 2004 All rights reserved.
 ********************************************************************/
+#undef SWITCHKINS_DEBUG
+#ifdef SWITCHKINS_DEBUG
+#include <stdio.h>  //rtpreempt only
+#endif
 
 #include "posemath.h"
 #include "rtapi.h"
@@ -26,12 +30,17 @@
 #include "config.h"
 #include "motion_types.h"
 #include "homing.h"
+#include "kinematics.h"  //for kinematicsSwitchable()
 
 // Mark strings for translation, but defer translation to userspace
 #define _(s) (s)
+
 static int    ext_offset_teleop_limit = 0;
 static int    ext_offset_coord_limit  = 0;
 static double ext_offset_epsilon;
+
+static int    switchkins_type = 0;
+
 /* kinematics flags */
 KINEMATICS_FORWARD_FLAGS fflags = 0;
 KINEMATICS_INVERSE_FLAGS iflags = 0;
@@ -304,6 +313,61 @@ void emcmotController(void *arg, long period)
    prototypes"
 */
 
+static void handle_kinematicsSwitch() {
+    int joint_num;
+#ifdef SWITCHKINS_DEBUG
+double j0b,j1b,j0a,j1a,xb,yb,xa,ya;
+emcmot_joint_t *jj;
+#endif
+    if(   kinematicsSwitchable()
+       && switchkins_type != *emcmot_hal_data->switchkins_type) {
+#ifdef SWITCHKINS_DEBUG
+fprintf(stderr, "CONTROL: kinematicsSwitch %d -> %d\n",
+        switchkins_type,*emcmot_hal_data->switchkins_type);
+#endif
+      switchkins_type   = *emcmot_hal_data->switchkins_type;
+
+      emcmot_joint_t *jointKinsSwitch;
+      double joint_posKinsSwitch[EMCMOT_MAX_JOINTS] = {0,};
+#ifdef SWITCHKINS_DEBUG
+jj = &joints[0]; j0b=jj->pos_cmd;
+jj = &joints[1]; j1b=jj->pos_cmd;
+xb  = emcmotStatus->carte_pos_cmd.tran.x;
+yb  = emcmotStatus->carte_pos_cmd.tran.y;
+#endif
+      /* copy joint position feedback to local array */
+      for (joint_num = 0; joint_num < emcmotConfig->numJoints; joint_num++) {
+        /* point to joint struct */
+        jointKinsSwitch = &joints[joint_num];
+        /* copy feedback */
+        joint_posKinsSwitch[joint_num] = jointKinsSwitch->pos_fb;
+      }
+
+      if (kinematicsSwitch(switchkins_type)) {
+          rtapi_print_msg(RTAPI_MSG_ERR,"kinematicsSwitch() FAIL\n");
+          return; //skip updates
+      }
+
+      KINEMATICS_FORWARD_FLAGS tmpFFlags = fflags;
+      KINEMATICS_INVERSE_FLAGS tmpIFlags = iflags;
+
+      kinematicsForward(joint_posKinsSwitch,
+                        &emcmotStatus->carte_pos_cmd,
+                        &tmpFFlags, &tmpIFlags);
+      tpSetPos(&emcmotDebug->coord_tp, &emcmotStatus->carte_pos_cmd);
+
+#ifdef SWITCHKINS_DEBUG
+xa  = emcmotStatus->carte_pos_cmd.tran.x;
+ya  = emcmotStatus->carte_pos_cmd.tran.y;
+j0a = joint_posKinsSwitch[0];
+j1a = joint_posKinsSwitch[1];
+fprintf(stderr,"j0b=%7.3f j1b=%7.3f xb=%7.3f yb=%7.3f\n",j0b,j1b,xb,yb);
+fprintf(stderr,"j0a=%7.3f j1a=%7.3f xb=%7.3f yb=%7.3f\n",j0a,j1a,xa,ya);
+#endif
+       //emcmotStatus->carte_pos_fb_ok = 1;
+    }
+}
+
 static void process_inputs(void)
 {
     int joint_num, spindle_num;
@@ -311,6 +375,7 @@ static void process_inputs(void)
     joint_hal_t *joint_data;
     emcmot_joint_t *joint;
     unsigned char enables;
+    handle_kinematicsSwitch();
     /* read spindle angle (for threading, etc) */
     for (spindle_num = 0; spindle_num < emcmotConfig->numSpindles; spindle_num++){
 		emcmotStatus->spindle_status[spindle_num].spindleRevs =

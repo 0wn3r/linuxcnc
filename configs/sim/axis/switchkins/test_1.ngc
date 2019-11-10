@@ -1,0 +1,37 @@
+#<FRATE>=1000
+o<kswitch> call [0] ; (Switch Back to Trivkins)
+G0 X0 Y0 Z0 A0 C0
+G0 C90 X10 Y0
+G1 F#<FRATE> Z2
+
+o<kswitch> call [1] ; (Switch to XYZAC)
+G1 F#<FRATE> Z0
+
+o<kswitch> call [0] ; (Switch Back to Trivkins)
+G1 F#<FRATE> Z2
+G0 C90 X0 Y10
+G1 F#<FRATE> Z0
+
+o<kswitch> call [1] ; (Switch to XYZAC)
+G1 F#<FRATE> Z2
+
+o<kswitch> call [0] ; (Switch Back to Trivkins)
+G1 F#<FRATE> Z0
+G0 C90 X10 Y50
+G1 F#<FRATE> Z2
+
+o<kswitch> call [1] ; (Switch to XYZAC)
+G1 F#<FRATE> Z0
+
+o<kswitch> call [0] ; (Switch Back to Trivkins)
+G1 F#<FRATE> Z2
+G0 C90 X50 Y10
+G1 F#<FRATE> Z0
+
+o<kswitch> call [1] ; (Switch to XYZAC)
+G1 F#<FRATE> Z2
+o<kswitch> call [0] ; (Switch Back to Trivkins)
+G1 F#<FRATE> Z0
+
+G0 X0 Y0 Z0 A0 C0
+M2

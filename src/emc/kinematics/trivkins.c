@@ -17,12 +17,14 @@
 #include "rtapi_app.h"		/* RTAPI realtime module decls */
 #include "rtapi_math.h"
 #include "rtapi_string.h"
+#include "kinematics.h"
 
 struct data { 
     hal_s32_t joints[EMCMOT_MAX_JOINTS];
 } *data;
 
 #define SET(f) pos->f = joints[i]
+
 
 int kinematicsForward(const double *joints,
 		      EmcPose * pos,
@@ -96,6 +98,7 @@ RTAPI_MP_STRING(coordinates, "Existing Axes");
 static char *kinstype = "1"; // use KINEMATICS_IDENTITY
 RTAPI_MP_STRING(kinstype, "Kinematics Type (Identity,Both)");
 
+KINS_NOT_SWITCHABLE
 EXPORT_SYMBOL(kinematicsType);
 EXPORT_SYMBOL(kinematicsForward);
 EXPORT_SYMBOL(kinematicsInverse);

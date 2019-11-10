@@ -1,0 +1,19 @@
+switchkins-xyzac
+
+Use motion.switchkins-type to alter
+kinematics type.
+
+The kswitch.ngc provides the kswitch
+gcode subroutine to:
+
+  1) Synch prior to kinematicsSwitch()
+     (using M66)
+
+  2) Call M122 (custom M code) to pass
+     P parameter to select switchable
+     kinematics type:
+       0 ==> Trivkins
+       1 ==> XYZAC
+
+  3) Synch after kinematicsSwitch()
+     (using M66)

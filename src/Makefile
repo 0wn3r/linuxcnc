@@ -967,6 +967,9 @@ hal_lib-objs := hal/hal_lib.o $(MATHSTUB)
 obj-m += trivkins.o
 trivkins-objs := emc/kinematics/trivkins.o
 
+obj-m += xyzac-switchkins.o
+xyzac-switchkins-objs := emc/kinematics/xyzac-switchkins.o
+
 obj-m += 5axiskins.o
 5axiskins-objs := emc/kinematics/5axiskins.o
 
@@ -1125,6 +1128,7 @@ endif
 ../rtlib/hal_lib$(MODULE_EXT): $(addprefix objects/rt,$(hal_lib-objs))
 ../rtlib/motmod$(MODULE_EXT): $(addprefix objects/rt,$(motmod-objs))
 ../rtlib/trivkins$(MODULE_EXT): $(addprefix objects/rt,$(trivkins-objs))
+../rtlib/xyzac-switchkins$(MODULE_EXT): $(addprefix objects/rt,$(xyzac-switchkins-objs))
 ../rtlib/5axiskins$(MODULE_EXT): $(addprefix objects/rt,$(5axiskins-objs))
 ../rtlib/maxkins$(MODULE_EXT): $(addprefix objects/rt,$(maxkins-objs))
 ../rtlib/rotatekins$(MODULE_EXT): $(addprefix objects/rt,$(rotatekins-objs))
