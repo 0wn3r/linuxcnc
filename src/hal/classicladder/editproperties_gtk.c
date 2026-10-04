@@ -29,6 +29,7 @@
 #include "classicladder.h"
 #include "global.h"
 #include "editproperties_gtk.h"
+#include "classicladder_gtk.h"
 #include "edit.h"
 #include <rtapi_string.h>
 
@@ -37,8 +38,6 @@ GtkWidget *PropLabelParam[NBR_PARAMS_PER_OBJ],*PropEntryParam[NBR_PARAMS_PER_OBJ
 GtkWidget *PropEntryBaseParam[NBR_PARAMS_PER_OBJ];
 GtkWidget *PropEntryTimerModeParam[NBR_PARAMS_PER_OBJ];
 GtkWidget *ButtonApplyProperties;
-int SavePosX = -1;
-int SavePosY = -1;
 
 void SetProperty(int NumParam,char * LblParam,char * ValParam)
 {
@@ -49,8 +48,6 @@ void SetProperty(int NumParam,char * LblParam,char * ValParam)
 		if ( strcmp(LblParam,"---")==0 )
 		{
 			gtk_widget_hide( gtk_widget_get_parent( PropLabelParam[NumParam] ) );
-			// let the window shrink to its new content
-			gtk_window_resize( GTK_WINDOW(PropertiesWindow), 1, 1 );
 		}
 		else
 			gtk_widget_show( gtk_widget_get_parent( PropLabelParam[NumParam] ) );
@@ -97,14 +94,6 @@ void SetProperty(int NumParam,char * LblParam,char * ValParam)
 		else
 		{
 			gtk_widget_show(ButtonApplyProperties);
-#ifndef GTK2
-			// no gtk_window_present() function available with GTK1.2
-			//not beautiful but it works...
-			gtk_widget_hide(PropertiesWindow);
-			gtk_widget_show(PropertiesWindow);
-#else
-			gtk_window_present( GTK_WINDOW(PropertiesWindow) );
-#endif
 		}
 	}
 }
@@ -141,19 +130,10 @@ gint PropertiesWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer
 	return TRUE;
 }
 
+// the properties are docked in the main window: show/hide their panel
 void ShowPropertiesWindow( int Visible )
 {
-	if ( Visible )
-	{
-		gtk_widget_show(PropertiesWindow);
-		if ( SavePosX!=-1 && SavePosY!=-1 )
-			gtk_window_move( GTK_WINDOW(PropertiesWindow), SavePosX, SavePosY );
-	}
-	else
-	{
-		gtk_window_get_position( GTK_WINDOW(PropertiesWindow), &SavePosX, &SavePosY );
-		gtk_widget_hide(PropertiesWindow);
-	}
+	ShowPropertiesPanel( Visible );
 }
 
 void PropertiesInitGtk()

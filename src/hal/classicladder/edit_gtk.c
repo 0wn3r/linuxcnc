@@ -112,6 +112,7 @@ void ButtonsForStart()
 	gtk_widget_show (EditorButtonOk);
 	gtk_widget_show (EditorButtonCancel);
 	ShowPropertiesWindow( TRUE );
+	ShowEditModeInMainWindow( TRUE );
 	// select directly the pointer in toolbar per default...
 	EditDatas.NumElementSelectedInToolBar = EDIT_POINTER;
 	// ...in rung toolbar
@@ -148,6 +149,7 @@ void ButtonsForEnd( char ForRung )
 	gtk_widget_hide (EditorButtonOk);
 	gtk_widget_hide (EditorButtonCancel);
 	ShowPropertiesWindow( FALSE );
+	ShowEditModeInMainWindow( FALSE );
 	ShowLadderStateInStatusBar( );
 }
 
@@ -232,19 +234,10 @@ gint EditorWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer dat
 	return TRUE;
 }
 
+// the editor is docked in the main window: show/hide its panel
 void OpenEditWindow( void )
 {
-	if ( !GTK_WIDGET_VISIBLE( EditWindow ) )
-	{
-		gtk_widget_show (EditWindow);
-#ifdef GTK2
-		gtk_window_present( GTK_WINDOW(EditWindow) );
-#endif
-	}
-	else
-	{
-		gtk_widget_hide( EditWindow );
-	}
+	ToggleEditorPanel( );
 }
 
 void ButtonToolbarSignal( GtkWidget * widget, gpointer data )
@@ -339,7 +332,7 @@ void CreateOneToolbar( GtkWidget * Box, int NumTable, short int PtrOnToolBarElem
 
 void EditorInitGtk()
 {
-	GtkWidget *vbox;
+	GtkWidget *vbox, *ButtonsTable;
 
 	EditWindow = gtk_window_new (GTK_WINDOW_TOPLEVEL);
 	gtk_window_set_title ( GTK_WINDOW( EditWindow ), _("Editor"));
@@ -348,32 +341,37 @@ void EditorInitGtk()
 	gtk_container_add (GTK_CONTAINER (EditWindow), vbox);
 	gtk_widget_show (vbox);
 
+	// buttons on two columns, to keep the editor compact
+	ButtonsTable = gtk_table_new( 3, 2, FALSE/*homogeneous*/ );
+	gtk_box_pack_start( GTK_BOX(vbox), ButtonsTable, FALSE, FALSE, 0 );
+	gtk_widget_show( ButtonsTable );
+
 	EditorButtonAdd = gtk_button_new_with_label (_("Add"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonAdd, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonAdd, 0, 1, 0, 1, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonAdd), "clicked",
 						(GtkSignalFunc) ButtonAddRung, 0);
 	gtk_widget_show (EditorButtonAdd);
 	EditorButtonIns = gtk_button_new_with_label (_("Insert"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonIns, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonIns, 1, 2, 0, 1, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonIns), "clicked",
 						(GtkSignalFunc) ButtonInsertRung, 0);
 	gtk_widget_show (EditorButtonIns);
 	EditorButtonDel = gtk_button_new_with_label (_("Delete"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonDel, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonDel, 0, 1, 1, 2, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonDel), "clicked",
 						(GtkSignalFunc) ButtonDeleteCurrentRung, 0);
 	gtk_widget_show (EditorButtonDel);
 	EditorButtonModify = gtk_button_new_with_label (_("Modify"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonModify, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonModify, 1, 2, 1, 2, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonModify), "clicked",
 						(GtkSignalFunc) ButtonModifyCurrentRung, 0);
 	gtk_widget_show (EditorButtonModify);
 	EditorButtonOk = gtk_button_new_with_label (_("Ok"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonOk, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonOk, 0, 1, 2, 3, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonOk), "clicked",
 						(GtkSignalFunc) ButtonOkCurrentRung, 0);
 	EditorButtonCancel = gtk_button_new_with_label (_("Cancel"));
-	gtk_box_pack_start (GTK_BOX (vbox), EditorButtonCancel, FALSE, FALSE, 0);
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonCancel, 1, 2, 2, 3, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonCancel), "clicked",
 						(GtkSignalFunc) ButtonCancelCurrentRung, 0);
 

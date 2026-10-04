@@ -58,6 +58,16 @@ GtkWidget *StatusBar;
 GtkWidget *dialog,*label, *okay_button;
 gint StatusBarContextId;
 void ButtonOkCurrentRung( );
+void ButtonModifyCurrentRung( );
+
+/* single window layout: the tool windows contents are docked in the main window */
+static GtkWidget *SidePanel, *SideScroll;	/* left: sections, editor, properties */
+static GtkWidget *FrameSections, *FrameEditor, *FrameProperties;
+static GtkWidget *EditHintLabel;	/* how to start an edit (shown when not editing) */
+static GtkWidget *EditBanner;		/* above the ladder, shown while editing */
+static GtkWidget *ToolsNotebook;	/* below the ladder: symbols, bit status, watch */
+extern GtkWidget *EditWindow, *PropertiesWindow, *ManagerWindow, *SymbolsWindow;
+extern GtkWidget *SpyBoolVarsWindow, *SpyFreeVarsWindow;
 
 #include "drawing.h"
 #include "vars_access.h"
@@ -237,6 +247,13 @@ static gint HScrollBar_value_changed_event( GtkAdjustment * ScrollBar, void * no
 
 static gint button_press_event( GtkWidget *widget, GdkEventButton *event )
 {
+	// double-click: edit the rung (or sequential page) selected by the first click
+	if ( event->button==1 && event->type==GDK_2BUTTON_PRESS )
+	{
+		if ( !EditDatas.ModeEdit )
+			ButtonModifyCurrentRung( );
+		return TRUE;
+	}
 	if (event->button == 1 && pixmap != NULL)
 	{
 		if (EditDatas.ModeEdit)
@@ -879,6 +896,7 @@ void RungWindowInitGtk()
 {
 	GtkWidget *vbox,*hboxtop,*hboxbottom,*hboxbottom2;
 	GtkWidget *hboxmiddle;
+	GtkWidget *MainPaned,*ViewPaned,*vboxladder;
 	GtkWidget *ButtonQuit;
 	GtkWidget *ButtonNew,*ButtonLoad,*ButtonSave,*ButtonSaveAs,*ButtonReset,*ButtonConfig,*ButtonAbout;
 	GtkWidget *ButtonEdit,*ButtonSymbols,*ButtonSpyVars;
@@ -897,10 +915,45 @@ void RungWindowInitGtk()
 	gtk_signal_connect (GTK_OBJECT (RungWindow), "destroy",
 						GTK_SIGNAL_FUNC (QuitAppliGtk), NULL);
 
+	/* side panel on the left, ladder view with the tools tabs below on the right */
+	MainPaned = gtk_hpaned_new( );
+	gtk_box_pack_start( GTK_BOX(vbox), MainPaned, TRUE, TRUE, 0 );
+	gtk_widget_show( MainPaned );
+	SideScroll = gtk_scrolled_window_new( NULL, NULL );
+	gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(SideScroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC );
+	gtk_paned_pack1( GTK_PANED(MainPaned), SideScroll, FALSE/*resize*/, FALSE/*shrink*/ );
+	gtk_widget_show( SideScroll );
+	SidePanel = gtk_vbox_new( FALSE, 4 );
+	gtk_container_set_border_width( GTK_CONTAINER(SidePanel), 2 );
+	gtk_scrolled_window_add_with_viewport( GTK_SCROLLED_WINDOW(SideScroll), SidePanel );
+	gtk_widget_show( SidePanel );
+	ViewPaned = gtk_vpaned_new( );
+	gtk_paned_pack2( GTK_PANED(MainPaned), ViewPaned, TRUE/*resize*/, FALSE/*shrink*/ );
+	gtk_widget_show( ViewPaned );
+	vboxladder = gtk_vbox_new( FALSE, 0 );
+	gtk_paned_pack1( GTK_PANED(ViewPaned), vboxladder, TRUE/*resize*/, FALSE/*shrink*/ );
+	gtk_widget_show( vboxladder );
+	ToolsNotebook = gtk_notebook_new( );
+	gtk_paned_pack2( GTK_PANED(ViewPaned), ToolsNotebook, FALSE/*resize*/, TRUE/*shrink*/ );
+
+	/* banner telling that the rung is under edit, and how to end it */
+	EditBanner = gtk_event_box_new( );
+	{
+		GdkColor BannerColor;
+		GtkWidget * BannerLabel = gtk_label_new( _("Editing: pick an element in the palette, then click where to put it.   Ok: Ctrl+Enter   Cancel: Esc") );
+		gdk_color_parse( "#ffd75f", &BannerColor );
+		gtk_widget_modify_bg( EditBanner, GTK_STATE_NORMAL, &BannerColor );
+		gtk_misc_set_padding( GTK_MISC(BannerLabel), 4, 3 );
+		gtk_label_set_line_wrap( GTK_LABEL(BannerLabel), TRUE );
+		gtk_container_add( GTK_CONTAINER(EditBanner), BannerLabel );
+		gtk_widget_show( BannerLabel );
+	}
+	gtk_box_pack_start( GTK_BOX(vboxladder), EditBanner, FALSE, FALSE, 0 );
+
 	hboxtop = gtk_hbox_new (FALSE,0);
-	gtk_container_add (GTK_CONTAINER (vbox), hboxtop);
+	gtk_container_add (GTK_CONTAINER (vboxladder), hboxtop);
 	gtk_widget_show(hboxtop);
-	gtk_box_set_child_packing(GTK_BOX(vbox), hboxtop,
+	gtk_box_set_child_packing(GTK_BOX(vboxladder), hboxtop,
 		/*expand*/ FALSE, /*fill*/ FALSE, /*pad*/ 0, GTK_PACK_START);
 
 	TooltipsEntryLabel = gtk_tooltips_new();
@@ -939,9 +992,9 @@ void RungWindowInitGtk()
 
 
 	hboxmiddle = gtk_hbox_new (FALSE,0);
-	gtk_container_add (GTK_CONTAINER (vbox), hboxmiddle);
+	gtk_container_add (GTK_CONTAINER (vboxladder), hboxmiddle);
 	gtk_widget_show(hboxmiddle);
-	gtk_box_set_child_packing(GTK_BOX(vbox), hboxmiddle,
+	gtk_box_set_child_packing(GTK_BOX(vboxladder), hboxmiddle,
 		/*expand*/ TRUE, /*fill*/ TRUE, /*pad*/ 0, GTK_PACK_START);
 
 	/* Create the drawing area */
@@ -959,7 +1012,7 @@ void RungWindowInitGtk()
 
 	AdjustHScrollBar = (GtkAdjustment *)gtk_adjustment_new( 0, 0, 0, 0, 0, 0);
 	HScrollBar = gtk_hscrollbar_new( AdjustHScrollBar );
-	gtk_box_pack_start (GTK_BOX (vbox), HScrollBar, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (vboxladder), HScrollBar, FALSE, FALSE, 0);
 	gtk_widget_show (HScrollBar);
 	UpdateVScrollBar();
 
@@ -1089,11 +1142,126 @@ void RungWindowInitGtk()
 
 	gtk_signal_connect( GTK_OBJECT(RungWindow), "delete_event",
 		(GtkSignalFunc)RungWindowDeleteEvent, NULL );
+	// buttons rows on top of the window, as a toolbar
+	gtk_box_reorder_child( GTK_BOX(vbox), hboxbottom, 0 );
+	gtk_box_reorder_child( GTK_BOX(vbox), hboxbottom2, 1 );
 	// default size showing a few rungs instead of only one
-	gtk_window_set_default_size( GTK_WINDOW(RungWindow), -1, 2*BLOCK_HEIGHT_DEF*RUNG_HEIGHT+220 );
+	gtk_window_set_default_size( GTK_WINDOW(RungWindow), -1, 2*BLOCK_HEIGHT_DEF*RUNG_HEIGHT+260 );
 	gtk_widget_show (RungWindow);
 
 	GetTheSizesForRung();
+}
+
+/* move the content of a tool window into a container of the main window */
+static void DockWindowContent( GtkWidget * ToolWindow, GtkWidget * NewParent )
+{
+	GtkWidget * Content = gtk_bin_get_child( GTK_BIN(ToolWindow) );
+	gtk_widget_hide( ToolWindow );
+	gtk_widget_reparent( Content, NewParent );
+}
+static GtkWidget * CreateSideFrame( char * Title )
+{
+	GtkWidget * Frame = gtk_frame_new( Title );
+	gtk_box_pack_start( GTK_BOX(SidePanel), Frame, FALSE, FALSE, 0 );
+	gtk_widget_show( Frame );
+	return Frame;
+}
+static void AddToolsPage( GtkWidget * ToolWindow, char * Title, char WithScroll )
+{
+	GtkWidget * TabLabel = gtk_label_new( Title );
+	GtkWidget * Page;
+	if ( WithScroll )
+	{
+		GtkWidget * Viewport = gtk_viewport_new( NULL, NULL );
+		Page = gtk_scrolled_window_new( NULL, NULL );
+		gtk_scrolled_window_set_policy( GTK_SCROLLED_WINDOW(Page), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC );
+		gtk_container_add( GTK_CONTAINER(Page), Viewport );
+		gtk_widget_show( Viewport );
+		DockWindowContent( ToolWindow, Viewport );
+	}
+	else
+	{
+		Page = gtk_vbox_new( FALSE, 0 );
+		DockWindowContent( ToolWindow, Page );
+	}
+	gtk_widget_set_size_request( Page, -1, 180 );
+	gtk_widget_show( Page );
+	gtk_notebook_append_page( GTK_NOTEBOOK(ToolsNotebook), Page, TabLabel );
+}
+static void DockAllToolWindows( void )
+{
+	FrameSections = CreateSideFrame( _("Sections") );
+	DockWindowContent( ManagerWindow, FrameSections );
+	FrameEditor = CreateSideFrame( _("Editor") );
+	{
+		GtkWidget * EditorBox = gtk_vbox_new( FALSE, 2 );
+		gtk_container_add( GTK_CONTAINER(FrameEditor), EditorBox );
+		gtk_widget_show( EditorBox );
+		EditHintLabel = gtk_label_new( _("Double-click a rung (or select it and press Modify) to edit it.") );
+		gtk_label_set_line_wrap( GTK_LABEL(EditHintLabel), TRUE );
+		gtk_widget_set_size_request( EditHintLabel, 160, -1 );
+		gtk_box_pack_start( GTK_BOX(EditorBox), EditHintLabel, FALSE, FALSE, 2 );
+		gtk_widget_show( EditHintLabel );
+		DockWindowContent( EditWindow, EditorBox );
+	}
+	FrameProperties = CreateSideFrame( _("Properties") );
+	DockWindowContent( PropertiesWindow, FrameProperties );
+	gtk_widget_hide( FrameProperties );
+
+	// side panel wide enough for its content (only scrolled vertically)
+	{
+		GtkRequisition SideSize;
+		gtk_widget_size_request( SidePanel, &SideSize );
+		gtk_widget_set_size_request( SideScroll, SideSize.width+20, -1 );
+	}
+
+	AddToolsPage( SymbolsWindow, _("Symbols"), FALSE );
+	AddToolsPage( SpyBoolVarsWindow, _("Bit Status"), TRUE );
+	AddToolsPage( SpyFreeVarsWindow, _("Watch"), TRUE );
+}
+
+/* called by the "Editor" button */
+void ToggleEditorPanel( void )
+{
+	if ( GTK_WIDGET_VISIBLE( FrameEditor ) )
+		gtk_widget_hide( FrameEditor );
+	else
+		gtk_widget_show( FrameEditor );
+}
+void ShowPropertiesPanel( int Visible )
+{
+	if ( Visible )
+		gtk_widget_show( FrameProperties );
+	else
+		gtk_widget_hide( FrameProperties );
+}
+/* banner over the ladder and editor panel state, when entering/leaving edit */
+void ShowEditModeInMainWindow( int Editing )
+{
+	if ( Editing )
+	{
+		gtk_widget_show( EditBanner );
+		gtk_widget_hide( EditHintLabel );
+		gtk_widget_show( FrameEditor );
+	}
+	else
+	{
+		gtk_widget_hide( EditBanner );
+		gtk_widget_show( EditHintLabel );
+	}
+}
+/* show a page of the tools tabs under the ladder, or hide the tabs if this page is already shown */
+void ToggleToolsPage( int NumPage )
+{
+	if ( GTK_WIDGET_VISIBLE( ToolsNotebook ) && gtk_notebook_get_current_page( GTK_NOTEBOOK(ToolsNotebook) )==NumPage )
+	{
+		gtk_widget_hide( ToolsNotebook );
+	}
+	else
+	{
+		gtk_widget_show( ToolsNotebook );
+		gtk_notebook_set_current_page( GTK_NOTEBOOK(ToolsNotebook), NumPage );
+	}
 }
 
 static gint PeriodicUpdateDisplay(gpointer data)
@@ -1105,7 +1273,7 @@ static gint PeriodicUpdateDisplay(gpointer data)
 		snprintf(TextBuffer, sizeof(TextBuffer) , _("%d µs"), InfosGene->DurationOfLastScan/1000);
 		gtk_entry_set_text(GTK_ENTRY(DurationOfLastScan),TextBuffer);
 #endif
-		ToggleManagerWindow();
+		// (the sections manager is docked in the main window, hidden/shown with it)
 		if (InfosGene->HideGuiState == GTK_WIDGET_VISIBLE( RungWindow ) )
 		{
 			if ( GTK_WIDGET_VISIBLE( RungWindow ) )
@@ -1149,6 +1317,7 @@ void InitGtkWindows( int argc, char *argv[] )
 	SymbolsInitGtk( );
         IntConfigWindowGtk( );
         ShowErrorMessage( _("Error"), _("Failed MODBUS communications"), _("Ok") );
+	DockAllToolWindows( );
 	gtk_timeout_add( TIME_UPDATE_GTK_DISPLAY_MS, PeriodicUpdateDisplay, NULL );
 }
 

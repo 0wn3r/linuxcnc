@@ -48,7 +48,6 @@
 #define NBR_TYPE_BOOLS_SPY 3
 #define NBR_FREE_VAR_SPY 15
 
-static int toggle=0;
 GtkWidget *SpyBoolVarsWindow;
 GtkWidget *SpyFreeVarsWindow;
 
@@ -159,13 +158,9 @@ static gint OffsetBoolVar_activate_event(GtkWidget *widget, void * NumVarSpy)
 }
 
 // return true so window is not destroyed
-// set toggle to 3 so hitting vars button again will hide everything
-// unless we were only showing BoolVars window then start from the beginning
 gint BoolVarsWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer data )
 {
 	gtk_widget_hide( SpyBoolVarsWindow );
-	if (toggle==1) {toggle=0;
-	}else{toggle=3;}
 	return TRUE;
 }
 
@@ -383,12 +378,9 @@ static gint EntryVarSpy_activate_event(GtkWidget *widget, int NumSpy)
 }
 
 //return true so window is not destroyed
-//set toggle to 3 so hitting vars button again will hide everything
-//unless we were only showing FreeVars window then start from the beginning
 gint FreeVarsWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer data )
 {
 	gtk_widget_hide( SpyFreeVarsWindow );
-	if (toggle==2) {  toggle=0;  }else{  toggle=3;  }
 	return TRUE;
 }
 
@@ -468,29 +460,9 @@ void VarsWindowInitGtk()
 	BoolVarsWindowInitGtk( );
 }
 
-// This is modified to toggle the vars windows
-// be click the spyvars button multiple times
-// one, the other, both, then none of the windows will be shown
 void OpenSpyVarsWindow( )
 {
-	
-	switch (toggle)
-	{
-	case 0 :	gtk_widget_show( SpyBoolVarsWindow ); gtk_widget_hide( SpyFreeVarsWindow );
-			MessageInStatusBar(_("opened BOOL (bit) variable window. press again for WORD window"));
-		break;
-	case 1 :        gtk_widget_hide( SpyBoolVarsWindow ); gtk_widget_show( SpyFreeVarsWindow );
-			MessageInStatusBar(_("opened WORD (s32) variable window. press again for both windows"));
-		break;
-	case 2 :	gtk_widget_show( SpyBoolVarsWindow ); gtk_widget_show( SpyFreeVarsWindow );
-			MessageInStatusBar(_("opened BOTH variable windows. press again to close them."));
-		break;
-	case 3 :	gtk_widget_hide( SpyBoolVarsWindow ); gtk_widget_hide( SpyFreeVarsWindow );
-			MessageInStatusBar("");
-		break;
-	default:;
-	}
-	toggle++;
-	if (toggle==4) {toggle=0;}
-
+	// the bit status and watch are tabs under the ladder (pressing again hides the tabs)
+	ToggleToolsPage( TOOLS_PAGE_BOOL_VARS );
 }
+
