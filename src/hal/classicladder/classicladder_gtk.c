@@ -27,6 +27,7 @@
 #define _(x) gettext(x)
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
+#include <gdk/gdkkeysyms.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -56,6 +57,7 @@ GtkWidget *RungWindow;
 GtkWidget *StatusBar;
 GtkWidget *dialog,*label, *okay_button;
 gint StatusBarContextId;
+void ButtonOkCurrentRung( );
 
 #include "drawing.h"
 #include "vars_access.h"
@@ -329,6 +331,11 @@ void autorize_prevnext_buttons(int Yes)
 	}
 }
 
+void ShowLadderStateInStatusBar( void )
+{
+	MessageInStatusBar( (InfosGene->LadderState==STATE_RUN)?_("Running"):_("Stopped") );
+}
+
 void ButtonRunStop_click()
 {
 	if (InfosGene->LadderState==STATE_RUN)
@@ -402,14 +409,28 @@ void LoadNewLadder()
 #endif
     InfosGene->LadderState = STATE_STOP;
 }
+static char QuitAfterSaveAs = FALSE;
+void ButtonSaveAs_click( );
+
+static void ShowSavedInStatusBar( void )
+{
+	char Buff[ 300 ];
+	snprintf( Buff, sizeof(Buff), _("Project saved to %s"), InfosGene->CurrentProjectFileName );
+	MessageInStatusBar( Buff );
+}
+
 void ButtonSave_click()
 {
+	// a new project has no file name yet: ask for one
+	if ( InfosGene->CurrentProjectFileName[ 0 ]=='\0' )
+	{
+		ButtonSaveAs_click( );
+		return;
+	}
 	if ( !SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
-		{
 		ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
-	}else{ MessageInStatusBar(InfosGene->CurrentProjectFileName);}
-		
-
+	else
+		ShowSavedInStatusBar( );
 }
 
 void SaveAsLadder(void)
@@ -424,24 +445,29 @@ void SaveAsLadder(void)
 	, FALSE/*cForLoadingProject*/);
 	if ( !SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
 		ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
+	else
+		ShowSavedInStatusBar( );
         UpdateWindowTitleWithProjectName( );
+	if ( QuitAfterSaveAs )
+	{
+		QuitAfterSaveAs = FALSE;
+		if ( !InfosGene->AskConfirmationToQuit )
+			DoQuitGtkApplication( );
+	}
 }
 
 #ifdef GTK2
 void
 on_filechooserdialog_save_response(GtkDialog  *dialog,gint response_id,gpointer user_data)
 {
-	printf(_("SAVE %s %d\n"),gtk_file_chooser_get_filename (GTK_FILE_CHOOSER(FileSelector)),response_id);	
-
 	if(response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK)
 		SaveAsLadder();
+	QuitAfterSaveAs = FALSE;
 	gtk_widget_destroy(GTK_WIDGET(dialog));
 }
 void
 on_filechooserdialog_load_response(GtkDialog  *dialog,gint response_id,gpointer user_data)
 {
-	printf(_("LOAD %s %d\n"),gtk_file_chooser_get_filename (GTK_FILE_CHOOSER(FileSelector)),response_id);	
-
 	if(response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK)
 		LoadNewLadder();
 	gtk_widget_destroy(GTK_WIDGET(dialog));
@@ -483,6 +509,7 @@ void CreateFileSelection(char * Prompt,int Save)
 			GTK_STOCK_OPEN, GTK_RESPONSE_ACCEPT, NULL);
 	}
 	gtk_window_set_type_hint (GTK_WINDOW (FileSelector), GDK_WINDOW_TYPE_HINT_DIALOG);
+	gtk_window_set_transient_for( GTK_WINDOW(FileSelector), GTK_WINDOW(RungWindow) );
 
 	FilterOldProjects = gtk_file_filter_new( );
 	gtk_file_filter_set_name( FilterOldProjects, _("Old directories projects") );
@@ -523,6 +550,9 @@ void CreateFileSelection(char * Prompt,int Save)
 void DoNewProject( void )
 {
 	ClassicLadder_InitAllDatas( );
+	// forget the previous file name, so that "Save" does not overwrite it with the new empty project
+	InfosGene->CurrentProjectFileName[ 0 ] = '\0';
+	UpdateWindowTitleWithProjectName( );
 	UpdateAllGtkWindows( );
 	InfosGene->AskConfirmationToQuit = TRUE;
 }
@@ -627,8 +657,22 @@ void ShowMessageBox(const char * title, const char * text, const char * button)
 					label);
 	gtk_window_set_modal(GTK_WINDOW(dialog),TRUE);
 	gtk_window_set_title(GTK_WINDOW(dialog),title);
-	gtk_window_set_position(GTK_WINDOW(dialog),GTK_WIN_POS_CENTER);
+	gtk_window_set_transient_for(GTK_WINDOW(dialog),GTK_WINDOW(RungWindow));
+	gtk_window_set_position(GTK_WINDOW(dialog),GTK_WIN_POS_CENTER_ON_PARENT);
 	gtk_widget_show_all (dialog);
+}
+
+// error message for a variable name that could not be parsed,
+// repeating what the user typed and giving examples of valid names.
+void ShowVarParserError( const char * EnteredText )
+{
+	char Buff[ 400 ];
+	snprintf( Buff, sizeof(Buff), "%s: '%s'\n\n%s",
+		ErrorMessageVarParser?ErrorMessageVarParser:_("Unknown variable"),
+		EnteredText?EnteredText:"",
+		/* xgettext:no-c-format */
+		_("Expected a variable such as %I0, %Q2, %B12, %W5\nor the name of a symbol.") );
+	ShowMessageBox( _("Error"), Buff, _("Ok") );
 }
 
 void DoFunctionOfConfirmationBox(void * (*function_to_do)(void *))
@@ -671,7 +715,8 @@ void ShowConfirmationBoxWithChoiceOrNot(const char * title,const char * text,voi
 					label);
 	gtk_window_set_modal(GTK_WINDOW(ConfirmDialog),TRUE);
 	gtk_window_set_title(GTK_WINDOW(ConfirmDialog),title);
-	gtk_window_set_position(GTK_WINDOW(ConfirmDialog),GTK_WIN_POS_CENTER);
+	gtk_window_set_transient_for(GTK_WINDOW(ConfirmDialog),GTK_WINDOW(RungWindow));
+	gtk_window_set_position(GTK_WINDOW(ConfirmDialog),GTK_WIN_POS_CENTER_ON_PARENT);
 	gtk_widget_show_all (ConfirmDialog);
 }
 void ShowConfirmationBox(const char * title,const char * text,void * function_if_yes)
@@ -689,10 +734,58 @@ void DoQuitGtkApplication( void )
 {
 	gtk_widget_destroy( RungWindow ); //sends signal "destroy" that will call QuitAppliGtk()...
 }
+#define RESPONSE_QUIT_SAVE 1
+#define RESPONSE_QUIT_DISCARD 2
+static void QuitUnsavedResponse( GtkDialog * Dlg, gint Response, gpointer data )
+{
+	gtk_widget_destroy( GTK_WIDGET(Dlg) );
+	if ( Response==RESPONSE_QUIT_DISCARD )
+	{
+		DoQuitGtkApplication( );
+	}
+	else if ( Response==RESPONSE_QUIT_SAVE )
+	{
+		if ( InfosGene->CurrentProjectFileName[ 0 ]=='\0' )
+		{
+			// quit once the project has been saved in the file chooser
+			QuitAfterSaveAs = TRUE;
+			ButtonSaveAs_click( );
+		}
+		else if ( SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
+		{
+			DoQuitGtkApplication( );
+		}
+		else
+		{
+			ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
+		}
+	}
+}
+static void ConfirmQuitWithUnsavedChanges( void )
+{
+	GtkWidget * Dlg = gtk_message_dialog_new( GTK_WINDOW(RungWindow), GTK_DIALOG_MODAL,
+		GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE, "%s",
+		_("Save the changes to the project before quitting?") );
+	char SecondaryText[ 300 ];
+	snprintf( SecondaryText, sizeof(SecondaryText), "%s%s%s",
+		_("If you don't save, the modifications will be lost."),
+		EditDatas.ModeEdit?_("\nThe rung under edit has not been applied with Ok and is not saved."):"",
+		modmaster?_("\nMODBUS will stop if you quit."):"" );
+	gtk_message_dialog_format_secondary_text( GTK_MESSAGE_DIALOG(Dlg), "%s", SecondaryText );
+	gtk_dialog_add_buttons( GTK_DIALOG(Dlg),
+		_("Quit _without saving"), RESPONSE_QUIT_DISCARD,
+		GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
+		GTK_STOCK_SAVE, RESPONSE_QUIT_SAVE, NULL );
+	gtk_dialog_set_default_response( GTK_DIALOG(Dlg), RESPONSE_QUIT_SAVE );
+	gtk_window_set_title( GTK_WINDOW(Dlg), _("Quit") );
+	g_signal_connect( Dlg, "response", G_CALLBACK(QuitUnsavedResponse), NULL );
+	gtk_widget_show_all( Dlg );
+}
 void ConfirmQuit( void )
 {
-	if ( InfosGene->AskConfirmationToQuit )
-		ShowConfirmationBox( _("Warning!"), _("If not saved, all modifications will be lost.\nDo you really want to quit ?\n"), DoQuitGtkApplication );
+	// a rung under edit is not applied yet: also a modification that would be lost
+	if ( InfosGene->AskConfirmationToQuit || EditDatas.ModeEdit )
+		ConfirmQuitWithUnsavedChanges( );
 	else{
              if (!modmaster)  
                 {  
@@ -713,6 +806,73 @@ void MessageInStatusBar( char * msg )
 {
   gtk_statusbar_pop(GTK_STATUSBAR(StatusBar), StatusBarContextId);
   gtk_statusbar_push(GTK_STATUSBAR(StatusBar), StatusBarContextId, msg);
+}
+
+// scroll the ladder view by a number of pixels (positive = down)
+static void ScrollLadderView( gdouble Delta )
+{
+	gdouble NewValue = AdjustVScrollBar->value + Delta;
+	if ( NewValue > AdjustVScrollBar->upper - AdjustVScrollBar->page_size )
+		NewValue = AdjustVScrollBar->upper - AdjustVScrollBar->page_size;
+	if ( NewValue < AdjustVScrollBar->lower )
+		NewValue = AdjustVScrollBar->lower;
+	gtk_adjustment_set_value( AdjustVScrollBar, NewValue );
+}
+
+static gint scroll_event( GtkWidget *widget, GdkEventScroll *event )
+{
+	if ( !GTK_WIDGET_IS_SENSITIVE( VScrollBar ) )
+		return FALSE;
+	if ( event->direction==GDK_SCROLL_DOWN )
+		ScrollLadderView( AdjustVScrollBar->step_increment );
+	else if ( event->direction==GDK_SCROLL_UP )
+		ScrollLadderView( -AdjustVScrollBar->step_increment );
+	return TRUE;
+}
+
+static gint RungWindowKeyPressEvent( GtkWidget *widget, GdkEventKey *event, gpointer data )
+{
+	GtkWidget * Focus = gtk_window_get_focus( GTK_WINDOW(RungWindow) );
+	char ControlKey = ( event->state & GDK_CONTROL_MASK )?TRUE:FALSE;
+	if ( ControlKey && ( event->keyval==GDK_s || event->keyval==GDK_S ) )
+	{
+		ButtonSave_click( );
+		return TRUE;
+	}
+	if ( ControlKey && ( event->keyval==GDK_q || event->keyval==GDK_Q ) )
+	{
+		ConfirmQuit( );
+		return TRUE;
+	}
+	if ( EditDatas.ModeEdit )
+	{
+		if ( event->keyval==GDK_Escape )
+		{
+			ButtonCancelCurrentRung( );
+			return TRUE;
+		}
+		if ( ControlKey && ( event->keyval==GDK_Return || event->keyval==GDK_KP_Enter ) )
+		{
+			ButtonOkCurrentRung( );
+			return TRUE;
+		}
+		return FALSE;
+	}
+	// leave the keys to the text entries
+	if ( Focus!=NULL && GTK_IS_ENTRY( Focus ) )
+		return FALSE;
+	if ( !GTK_WIDGET_IS_SENSITIVE( VScrollBar ) )
+		return FALSE;
+	switch( event->keyval )
+	{
+		case GDK_Up: ScrollLadderView( -AdjustVScrollBar->step_increment ); return TRUE;
+		case GDK_Down: ScrollLadderView( AdjustVScrollBar->step_increment ); return TRUE;
+		case GDK_Page_Up: ScrollLadderView( -AdjustVScrollBar->page_increment ); return TRUE;
+		case GDK_Page_Down: ScrollLadderView( AdjustVScrollBar->page_increment ); return TRUE;
+		case GDK_Home: ScrollLadderView( -AdjustVScrollBar->upper ); return TRUE;
+		case GDK_End: ScrollLadderView( AdjustVScrollBar->upper ); return TRUE;
+	}
+	return FALSE;
 }
 
 void RungWindowInitGtk()
@@ -915,15 +1075,22 @@ void RungWindowInitGtk()
 	/* Event signals */
 	gtk_signal_connect (GTK_OBJECT (drawing_area), "button_press_event",
 						(GtkSignalFunc) button_press_event, NULL);
+	gtk_signal_connect (GTK_OBJECT (drawing_area), "scroll_event",
+						(GtkSignalFunc) scroll_event, NULL);
+	gtk_signal_connect (GTK_OBJECT (RungWindow), "key_press_event",
+						(GtkSignalFunc) RungWindowKeyPressEvent, NULL);
 
 	gtk_widget_set_events (drawing_area, GDK_EXPOSURE_MASK
 							| GDK_LEAVE_NOTIFY_MASK
 							| GDK_BUTTON_PRESS_MASK
+							| GDK_SCROLL_MASK
 							| GDK_POINTER_MOTION_MASK
 							| GDK_POINTER_MOTION_HINT_MASK);
 
 	gtk_signal_connect( GTK_OBJECT(RungWindow), "delete_event",
 		(GtkSignalFunc)RungWindowDeleteEvent, NULL );
+	// default size showing a few rungs instead of only one
+	gtk_window_set_default_size( GTK_WINDOW(RungWindow), -1, 2*BLOCK_HEIGHT_DEF*RUNG_HEIGHT+220 );
 	gtk_widget_show (RungWindow);
 
 	GetTheSizesForRung();
@@ -1007,7 +1174,7 @@ void UpdateWindowTitleWithProjectName( void )
 		while( ScanFileNameOnly>0 && InfosGene->CurrentProjectFileName [ScanFileNameOnly-1]!='/' && InfosGene->CurrentProjectFileName [ScanFileNameOnly-1]!='\\')
 			ScanFileNameOnly--;
 	}
-	snprintf(Buff, sizeof(Buff), _("Section Display of %s"), &InfosGene->CurrentProjectFileName [ScanFileNameOnly] );
+	snprintf(Buff, sizeof(Buff), _("Section Display of %s"), InfosGene->CurrentProjectFileName[ 0 ]!='\0'?&InfosGene->CurrentProjectFileName [ScanFileNameOnly]:_("new project") );
 	gtk_window_set_title ((GtkWindow *)RungWindow, Buff );
 }
 

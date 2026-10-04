@@ -94,10 +94,7 @@ void SaveSeqElementProperties( void )
 				if ( TextParserForAVar( GetProperty(0),&EditSeqDatas.Transition[ OffsetSeqEleEdited ].VarTypeCondi,
 							&EditSeqDatas.Transition[ OffsetSeqEleEdited ].VarNumCondi, NULL, FALSE/*PartialNames*/ )==FALSE )
 				{
-					if (ErrorMessageVarParser)
-						ShowMessageBox(_("Error"),ErrorMessageVarParser,_("Ok"));
-					else
-						ShowMessageBox( _("Error"), _("Unknown variable..."), _("Ok") );
+					ShowVarParserError( GetProperty(0) );
 				}
 				break;
 			case ELE_SEQ_COMMENT:

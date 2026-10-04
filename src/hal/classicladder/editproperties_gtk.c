@@ -43,6 +43,18 @@ int SavePosY = -1;
 void SetProperty(int NumParam,char * LblParam,char * ValParam)
 {
 	gtk_label_set_text((GtkLabel *)PropLabelParam[NumParam],LblParam);
+	// hide the unused parameters rows (the first one is always kept)
+	if ( NumParam>0 )
+	{
+		if ( strcmp(LblParam,"---")==0 )
+		{
+			gtk_widget_hide( gtk_widget_get_parent( PropLabelParam[NumParam] ) );
+			// let the window shrink to its new content
+			gtk_window_resize( GTK_WINDOW(PropertiesWindow), 1, 1 );
+		}
+		else
+			gtk_widget_show( gtk_widget_get_parent( PropLabelParam[NumParam] ) );
+	}
 	if (strcmp(LblParam,"Base")==0)
 	{
 		gtk_widget_hide(PropEntryParam[NumParam]);
@@ -175,9 +187,10 @@ void PropertiesInitGtk()
 	{
 		hbox[NumParam] = gtk_hbox_new (FALSE, 0);
 		gtk_container_add (GTK_CONTAINER (vbox), hbox[NumParam]);
-		gtk_widget_show (hbox[NumParam]);
+		if ( NumParam==0 )
+			gtk_widget_show (hbox[NumParam]);
 
-		PropLabelParam[NumParam] = gtk_label_new(_("Parameter"));
+		PropLabelParam[NumParam] = gtk_label_new("---");
 		gtk_widget_set_usize((GtkWidget *)PropLabelParam[NumParam],85,0);
 		gtk_box_pack_start (GTK_BOX (hbox[NumParam]), PropLabelParam[NumParam], FALSE, FALSE, 0);
 		gtk_widget_show (PropLabelParam[NumParam]);

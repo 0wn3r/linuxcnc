@@ -23,6 +23,7 @@
 #include <locale.h>
 #include <libintl.h>
 #define _(x) gettext(x)
+#define N_(x) (x)
 #include <gtk/gtk.h>
 #include <stdio.h>
 #include "classicladder.h"
@@ -63,15 +64,15 @@ static short int ToolBarElementsLadder[ ][NBR_ELE_TOOLBAR_X_MAX] =
               {ELE_OUTPUT_JUMP, ELE_OUTPUT_CALL , ELE_OUTPUT_OPERATE , 0} ,
               {-1,-1}/*end*/ };
 char * ToolBarToolTipsTextLadder[ ][NBR_ELE_TOOLBAR_X_MAX] =
-            { { "Object\nSelector", "Eraser", NULL, NULL },
-              { "N.O. Input", "N.C. Input", "Rising Edge\n Input", "Falling Edge\n Input" },
-              { "Horizontal\nConnection", "Vertical\nConnection", "Long Horizontal\nConnection", NULL },
-              { "Timer IEC Block", "Counter Block",  "Variable\nComparison", NULL },
+            { { N_("Object Selector"), N_("Eraser"), NULL, NULL },
+              { N_("N.O. Input"), N_("N.C. Input"), N_("Rising Edge Input"), N_("Falling Edge Input") },
+              { N_("Horizontal Connection"), N_("Vertical Connection"), N_("Long Horizontal Connection"), NULL },
+              { N_("Timer IEC Block"), N_("Counter Block"), N_("Variable Comparison"), NULL },
 #ifdef OLD_TIMERS_MONOS_SUPPORT
-              { "Old Timer Block", "Monostable Block", NULL, NULL },
+              { N_("Old Timer Block"), N_("Monostable Block"), NULL, NULL },
 #endif
-              { "N.O. Output", "N.C. Output", "Set Output", "Reset Output" },
-              { "Jump Coil", "Call Coil", "Variable\nAssignment", NULL },
+              { N_("N.O. Output"), N_("N.C. Output"), N_("Set Output"), N_("Reset Output") },
+              { N_("Jump Coil"), N_("Call Coil"), N_("Variable Assignment"), NULL },
               { NULL, NULL, NULL, NULL } };
 
 
@@ -88,13 +89,13 @@ static short int ToolBarElementsSequential[ ][NBR_ELE_TOOLBAR_X_MAX] =
               {ELE_SEQ_COMMENT , 0 , 0 , 0} ,
               {-1,-1}/*end*/ };
 char * ToolBarToolTipsTextSequential[ ][NBR_ELE_TOOLBAR_X_MAX] =
-            { { "Current Object\nSelector", "Eraser", NULL, NULL },
-              { "Step", NULL, NULL, NULL },
-              { "Transition", NULL, NULL, NULL },
-              { NULL, NULL, NULL, NULL },
-              { NULL, NULL, NULL, NULL },
-              { "Link", NULL, NULL, NULL },
-              { "Comment", NULL, NULL, NULL },
+            { { N_("Object Selector"), N_("Eraser"), NULL, NULL },
+              { N_("Step"), N_("Initial Step"), NULL, NULL },
+              { N_("Transition"), N_("Step and Transition"), NULL, NULL },
+              { N_("Start of Many Transitions"), N_("End of Many Transitions"), NULL, NULL },
+              { N_("Start of Many Steps"), N_("End of Many Steps"), NULL, NULL },
+              { N_("Link"), NULL, NULL, NULL },
+              { N_("Comment"), NULL, NULL, NULL },
               { NULL, NULL, NULL, NULL } };
 #endif
 
@@ -147,7 +148,7 @@ void ButtonsForEnd( char ForRung )
 	gtk_widget_hide (EditorButtonOk);
 	gtk_widget_hide (EditorButtonCancel);
 	ShowPropertiesWindow( FALSE );
-	MessageInStatusBar( "" );
+	ShowLadderStateInStatusBar( );
 }
 
 void EditorButtonsAccordingSectionType( )
@@ -168,7 +169,7 @@ void EditorButtonsAccordingSectionType( )
 		gtk_widget_show( ToolbarTable[ NUM_TOOLBAR_FOR_RUNGS ] );
 	}
 #endif
-	MessageInStatusBar( "" );
+	ShowLadderStateInStatusBar( );
 }
 
 void ButtonAddRung()
@@ -318,7 +319,7 @@ void CreateOneToolbar( GtkWidget * Box, int NumTable, short int PtrOnToolBarElem
 				gtk_signal_connect( GTK_OBJECT (ToolbarBtnRadio[ CurrentAvail ]), "clicked", (GtkSignalFunc) ButtonToolbarSignal, GINT_TO_POINTER((int)ToolBarEle.Type) );
 
 				if (pHelpText!=NULL )
-					gtk_tooltips_set_tip (TheTooltips, ToolbarBtnRadio[ CurrentAvail ], pHelpText, NULL);
+					gtk_tooltips_set_tip (TheTooltips, ToolbarBtnRadio[ CurrentAvail ], _(pHelpText), NULL);
 
 				gtk_widget_show( ToolbarBtnRadio[ CurrentAvail ] );
 				CurrentAvail++;

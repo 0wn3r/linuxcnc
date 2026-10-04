@@ -323,6 +323,8 @@ void ManagerInitGtk()
 	gtk_widget_show (vbox);
 
 	SectionsList = gtk_clist_new_with_titles( /*3*/ 4, List );
+	// the "debug" column (internal rung indexes) is only useful for developers
+	gtk_clist_set_column_visibility( GTK_CLIST(SectionsList), 3, FALSE );
 	gtk_box_pack_start (GTK_BOX(vbox), SectionsList, TRUE, TRUE, 0);
 	gtk_signal_connect(GTK_OBJECT (SectionsList), "select-row",
 		(GtkSignalFunc) SelectRowSignal, 0);

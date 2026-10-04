@@ -134,10 +134,7 @@ void Callback_TextEdited(GtkCellRendererText *cell, gchar *path_string,
 				}
 				else
 				{
-					if (ErrorMessageVarParser)
-						ShowMessageBox( _("Error"), ErrorMessageVarParser, _("Ok") );
-					else
-						ShowMessageBox( _("Error"), _("Unknown variable..."), _("Ok") );
+					ShowVarParserError( new_text );
 				}
 			}
 			break;

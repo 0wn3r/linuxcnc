@@ -373,11 +373,7 @@ static gint EntryVarSpy_activate_event(GtkWidget *widget, int NumSpy)
 	}else{
 		int OldType,OldOffset;
 		/* Error Message */
-		if (ErrorMessageVarParser)
-                       {       ShowMessageBox(_("Error"),ErrorMessageVarParser,_("Ok"));
-		       }else{
-			       ShowMessageBox( _("Error"), "Unknown variable...", _("Ok") );
-                            }
+		ShowVarParserError( BufferVar );
 		OldType = *NumVarSpy++;
 		OldOffset = *NumVarSpy;
 		/* put back old correct var */
