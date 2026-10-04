@@ -467,10 +467,7 @@ void SaveElementProperties()
 				}
 				else
 				{
-					if (ErrorMessageVarParser)
-						ShowMessageBox(_("Error"),ErrorMessageVarParser,_("Ok"));
-					else
-						ShowMessageBox( _("Error"), _("Unknown variable..."), _("Ok") );
+					ShowVarParserError( GetProperty(0) );
 				}
 				break;
 #ifdef OLD_TIMERS_MONOS_SUPPORT

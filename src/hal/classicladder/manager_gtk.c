@@ -43,6 +43,7 @@ GtkWidget *ButtonMoveUpSection;
 GtkWidget *ButtonMoveDownSection;
 
 GtkWidget *AddSectionWindow;
+extern GtkWidget *RungWindow;
 GtkWidget * EditName;
 GtkWidget * CycleLanguage;
 GtkWidget * CycleSubRoutineNbr;
@@ -292,20 +293,15 @@ void AddSectionWindowInit( )
 		(GtkSignalFunc)ButtonAddSectionDoneClickSignal, 0);
 	gtk_widget_show (ButtonOk);
 	gtk_window_set_modal(GTK_WINDOW(AddSectionWindow),TRUE);
-	gtk_window_set_position(GTK_WINDOW(AddSectionWindow),GTK_WIN_POS_CENTER);
+	gtk_window_set_transient_for(GTK_WINDOW(AddSectionWindow),GTK_WINDOW(RungWindow));
+	gtk_window_set_position(GTK_WINDOW(AddSectionWindow),GTK_WIN_POS_CENTER_ON_PARENT);
 	gtk_signal_connect( GTK_OBJECT(AddSectionWindow), "delete_event",
 		(GtkSignalFunc)AddSectionWindowDeleteEvent, 0 );
 }
 
+// the sections manager is docked in the main window, and so hidden/shown with it.
 void ToggleManagerWindow()
 {
-	if (InfosGene->HideGuiState == GTK_WIDGET_VISIBLE( ManagerWindow ))
-	{
-		if ( GTK_WIDGET_VISIBLE( ManagerWindow ) )
-		{	gtk_widget_hide (ManagerWindow);
-		}else{	gtk_widget_show (ManagerWindow);
-		}
-	}
 }
 void ManagerInitGtk()
 {
@@ -323,6 +319,8 @@ void ManagerInitGtk()
 	gtk_widget_show (vbox);
 
 	SectionsList = gtk_clist_new_with_titles( /*3*/ 4, List );
+	// the "debug" column (internal rung indexes) is only useful for developers
+	gtk_clist_set_column_visibility( GTK_CLIST(SectionsList), 3, FALSE );
 	gtk_box_pack_start (GTK_BOX(vbox), SectionsList, TRUE, TRUE, 0);
 	gtk_signal_connect(GTK_OBJECT (SectionsList), "select-row",
 		(GtkSignalFunc) SelectRowSignal, 0);
@@ -356,7 +354,6 @@ void ManagerInitGtk()
 	ManagerDisplaySections( );
 	gtk_signal_connect( GTK_OBJECT(ManagerWindow), "delete_event",
 		(GtkSignalFunc)ManagerWindowDeleteEvent, 0 );
-	gtk_widget_show (ManagerWindow);
 
 	AddSectionWindowInit( );
 }

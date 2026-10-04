@@ -134,10 +134,7 @@ void Callback_TextEdited(GtkCellRendererText *cell, gchar *path_string,
 				}
 				else
 				{
-					if (ErrorMessageVarParser)
-						ShowMessageBox( _("Error"), ErrorMessageVarParser, _("Ok") );
-					else
-						ShowMessageBox( _("Error"), _("Unknown variable..."), _("Ok") );
+					ShowVarParserError( new_text );
 				}
 			}
 			break;
@@ -165,21 +162,11 @@ gint SymbolsWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer da
 	return TRUE;
 }
 
+// the symbols list is a tab under the ladder (pressing again hides the tabs)
 void OpenSymbolsWindow( void )
 {
-	if ( !GTK_WIDGET_VISIBLE( SymbolsWindow ) )
-	{ DisplaySymbols();
-		gtk_widget_show (SymbolsWindow);
-		MessageInStatusBar(_("opened SYMBOLS window. Press again to close"));
-#ifdef GTK2
-		gtk_window_present( GTK_WINDOW(SymbolsWindow) );
-#endif
-	}
-	else
-	{
-		gtk_widget_hide( SymbolsWindow );
-		MessageInStatusBar("");
-	}
+	DisplaySymbols();
+	ToggleToolsPage( TOOLS_PAGE_SYMBOLS );
 }
 
 void SymbolsInitGtk()

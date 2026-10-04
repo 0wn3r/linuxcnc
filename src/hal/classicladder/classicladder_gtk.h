@@ -27,6 +27,15 @@ void UpdateAllLabelsBoolsVars( );
 void DoQuitGtkApplication( void );
 void DoReset( );
 void MessageInStatusBar( char * msg );
+void ShowLadderStateInStatusBar( void );
+void ShowVarParserError( const char * EnteredText );
+#define TOOLS_PAGE_SYMBOLS 0
+#define TOOLS_PAGE_BOOL_VARS 1
+#define TOOLS_PAGE_FREE_VARS 2
+void ToggleEditorPanel( void );
+void ShowPropertiesPanel( int Visible );
+void ShowEditModeInMainWindow( int Editing );
+void ToggleToolsPage( int NumPage );
 void InitGtkWindows( int argc, char *argv[] );
 void UpdateAllGtkWindows( void );
 void UpdateWindowTitleWithProjectName( void );
