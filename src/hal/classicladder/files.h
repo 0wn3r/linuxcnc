@@ -27,6 +27,10 @@
 
 
 
+#define LGT_LOAD_WARNINGS 1000
+extern char LoadWarnings[ LGT_LOAD_WARNINGS ];
+void AddLoadWarning( const char * Format, ... );
+
 char *cl_fgets(char *s, int size, FILE *stream);
 void LoadAllRungs_V1(char * BaseName,StrRung * Rungs,int * TheFirst,int * TheLast,int * TheCurrent);
 void LoadAllRungs(char * BaseName,StrRung * Rungs);

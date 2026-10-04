@@ -24,6 +24,7 @@
 #include <libintl.h>
 #define _(x) gettext(x)
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -58,6 +59,35 @@ StrDatasForBase CorresDatasForBase[3] = { {BASE_MINS , TIME_BASE_MINS , "%.1fmn"
                                    {BASE_SECS , TIME_BASE_SECS , "%.1fs" , "Secs" } ,
                                    {BASE_100MS , TIME_BASE_100MS , "%.0f00ms" , "100msecs" } };
 char * TimersModesStrings[ NBR_TIMERSMODES ] = { "TON", "TOF", "TP" };
+
+// Problems found while loading the project: objects that do not fit in the sizes
+// given to classicladder_rt, strings too long, ... Saving the project afterwards
+// would drop them for good, so they are printed and kept here for the GUI.
+char LoadWarnings[ LGT_LOAD_WARNINGS ];
+static int NbrStringsTruncated;
+
+void AddLoadWarning( const char * Format, ... )
+{
+	char Buff[ 300 ];
+	va_list Args;
+	va_start( Args, Format );
+	vsnprintf( Buff, sizeof(Buff), Format, Args );
+	va_end( Args );
+	fprintf( stderr, "CLASSICLADDER: %s\n", Buff );
+	if ( strlen( LoadWarnings )+strlen( Buff )+2<sizeof(LoadWarnings) )
+	{
+		strcat( LoadWarnings, Buff );
+		strcat( LoadWarnings, "\n" );
+	}
+}
+
+// Objects found in a file beyond the size allocated for them (NbrMax).
+static void WarnObjectsDropped( int NbrDropped, const char * ObjectsName, int NbrMax, const char * ModuleParam )
+{
+	if ( NbrDropped>0 )
+		AddLoadWarning( _("%d %s not loaded: only %d allocated, raise %s= on the loadrt classicladder_rt line."),
+			NbrDropped, ObjectsName, NbrMax, ModuleParam );
+}
 
 char TmpDirectory[ 400 ] = "";
 
@@ -422,8 +452,9 @@ char * ConvRawLineOfStrings(char * RawLine,int * LgtParams,char ** ParamsStrings
 		if (*EndOfValue==10 || *EndOfValue=='\0')
 			EndOfLine = TRUE;
 		*EndOfValue++ = '\0';
-		if ( strlen( StartOfValue )<(unsigned int)LgtParams[ Num ] )
-			strcpy( ParamsStringsFnd[Num], StartOfValue );
+		if ( strlen( StartOfValue )>=(unsigned int)LgtParams[ Num ] )
+			NbrStringsTruncated++;
+		rtapi_strlcpy( ParamsStringsFnd[Num], StartOfValue, LgtParams[ Num ] );
 		Num++;
 		StartOfValue = EndOfValue;
 	}
@@ -439,6 +470,8 @@ char LoadTimersParams(char * FileName,StrTimer * BufTimers)
     char Line[300];
     char * LineOk;
     int Params[3];
+    int NumTimer = 0;
+    int NbrDropped = 0;
     File = fopen(FileName,"rt");
     if (File)
     {
@@ -450,6 +483,13 @@ char LoadTimersParams(char * FileName,StrTimer * BufTimers)
                 if (Line[0]!=';')
                 {
                     ConvRawLineOfNumbers(Line,2,Params);
+                    if ( NumTimer>=NBR_TIMERS )
+                    {
+                        // a preset left at 0 is the same as not saved
+                        if ( Params[1]!=0 )
+                            NbrDropped++;
+                        continue;
+                    }
                     switch(Params[0])
                     {
                         case BASE_MINS:
@@ -468,11 +508,13 @@ char LoadTimersParams(char * FileName,StrTimer * BufTimers)
                     }
 dbg_printf(_("Timer => Base = %d , Preset = %d\n"),BufTimers->Base,BufTimers->Preset);
                     BufTimers++;
+                    NumTimer++;
                 }
             }
         }
         while(LineOk);
         fclose(File);
+        WarnObjectsDropped( NbrDropped, _("timers"), NBR_TIMERS, "numTimers" );
         Okay = TRUE;
     }
     return (Okay);
@@ -509,6 +551,8 @@ char LoadMonostablesParams(char * FileName,StrMonostable * BufMonostables)
     char Line[300];
     char * LineOk;
     int Params[3];
+    int NumMonostable = 0;
+    int NbrDropped = 0;
     File = fopen(FileName,"rt");
     if (File)
     {
@@ -520,6 +564,13 @@ char LoadMonostablesParams(char * FileName,StrMonostable * BufMonostables)
                 if (Line[0]!=';')
                 {
                     ConvRawLineOfNumbers(Line,2,Params);
+                    if ( NumMonostable>=NBR_MONOSTABLES )
+                    {
+                        // a preset left at 0 is the same as not saved
+                        if ( Params[1]!=0 )
+                            NbrDropped++;
+                        continue;
+                    }
                     switch(Params[0])
                     {
                         case BASE_MINS:
@@ -538,11 +589,13 @@ char LoadMonostablesParams(char * FileName,StrMonostable * BufMonostables)
                     }
 dbg_printf(_("Monostable => Base = %d , Preset = %d\n"),BufMonostables->Base,BufMonostables->Preset);
                     BufMonostables++;
+                    NumMonostable++;
                 }
             }
         }
         while(LineOk);
         fclose(File);
+        WarnObjectsDropped( NbrDropped, _("monostables"), NBR_MONOSTABLES, "numMonostables" );
         Okay = TRUE;
     }
     return (Okay);
@@ -580,6 +633,7 @@ char LoadCountersParams(char * FileName)
     char * LineOk;
     int Params[1];
     int ScanCounter = 0;
+    int NbrDropped = 0;
     File = fopen(FileName,"rt");
     if (File)
     {
@@ -591,6 +645,13 @@ char LoadCountersParams(char * FileName)
                 if (Line[0]!=';')
                 {
                     ConvRawLineOfNumbers(Line,1,Params);
+                    if ( ScanCounter>=NBR_COUNTERS )
+                    {
+                        // a preset left at 0 is the same as not saved
+                        if ( Params[0]!=0 )
+                            NbrDropped++;
+                        continue;
+                    }
 					WriteVar( VAR_COUNTER_PRESET, ScanCounter, Params[ 0 ] );
 					ScanCounter++;
 
@@ -599,6 +660,7 @@ char LoadCountersParams(char * FileName)
         }
         while(LineOk);
         fclose(File);
+        WarnObjectsDropped( NbrDropped, _("counters"), NBR_COUNTERS, "numCounters" );
         Okay = TRUE;
     }
     return (Okay);
@@ -632,6 +694,7 @@ char LoadNewTimersParams(char * FileName)
 	char * LineOk;
 	int Params[3];
     int ScanTimerIEC = 0;
+	int NbrDropped = 0;
 	File = fopen(FileName,"rt");
 	if (File)
 	{
@@ -642,8 +705,16 @@ char LoadNewTimersParams(char * FileName)
 			{
 				if (Line[0]!=';')
 				{
-					StrTimerIEC * TimerIEC = &NewTimerArray[ ScanTimerIEC ];
+					StrTimerIEC * TimerIEC;
 					ConvRawLineOfNumbers(Line,3,Params);
+					if ( ScanTimerIEC>=NBR_TIMERS_IEC )
+					{
+						// a preset left at 0 is the same as not saved
+						if ( Params[1]!=0 )
+							NbrDropped++;
+						continue;
+					}
+					TimerIEC = &NewTimerArray[ ScanTimerIEC ];
 					switch(Params[0])
 					{
 						case BASE_MINS:
@@ -667,6 +738,7 @@ char LoadNewTimersParams(char * FileName)
 		}
 		while(LineOk);
 		fclose(File);
+		WarnObjectsDropped( NbrDropped, _("IEC timers"), NBR_TIMERS_IEC, "numTimersIec" );
 		Okay = TRUE;
 	}
 	return (Okay);
@@ -702,6 +774,7 @@ char LoadArithmeticExpr(char * FileName)
 	char Line[300];
 	char * LineOk;
 	int NumExpr = 0;
+	int NbrDropped = 0;
 	File = fopen(FileName,"rt");
 	if (File)
 	{
@@ -719,11 +792,17 @@ char LoadArithmeticExpr(char * FileName)
 					if ( Line[0]>='0' && Line[0]<='9' )
 					{
 						NumExpr = atoi(Line);
-						rtapi_strxcpy(ArithmExpr[NumExpr].Expr,Line+strlen("xxxx,"));
+						if ( NumExpr<NBR_ARITHM_EXPR )
+							rtapi_strxcpy(ArithmExpr[NumExpr].Expr,Line+strlen("xxxx,"));
+						else
+							NbrDropped++;
 					}
 					else
 					{
-						rtapi_strxcpy(ArithmExpr[NumExpr].Expr,Line);
+						if ( NumExpr<NBR_ARITHM_EXPR )
+							rtapi_strxcpy(ArithmExpr[NumExpr].Expr,Line);
+						else
+							NbrDropped++;
 						NumExpr++;
 					}
 				}
@@ -731,6 +810,7 @@ char LoadArithmeticExpr(char * FileName)
 		}
 		while(LineOk);
 		fclose(File);
+		WarnObjectsDropped( NbrDropped, _("arithmetic expressions"), NBR_ARITHM_EXPR, "numArithmExpr" );
 		Okay = TRUE;
 	}
 	return (Okay);
@@ -767,6 +847,7 @@ char LoadSectionsParams(char * FileName)
     int NumSection;
     StrSection * pSection;
     int Params[10];
+    int NbrDropped = 0;
     File = fopen(FileName,"rt");
     if (File)
     {
@@ -793,7 +874,8 @@ char LoadSectionsParams(char * FileName)
                         {
                             Line[ 8 ] = '\0';
                             NumSection = atoi( &Line[5] );
-                            rtapi_strxcpy(SectionArray[ NumSection ].Name, &Line[9]);
+                            if ( NumSection>=0 && NumSection<NBR_SECTIONS )
+                                rtapi_strxcpy(SectionArray[ NumSection ].Name, &Line[9]);
 //WIN32PORT
 //							RemoveEndLine( SectionArray[ NumSection ].Name );
                         }
@@ -801,6 +883,11 @@ char LoadSectionsParams(char * FileName)
                     default:
                         ConvRawLineOfNumbers(Line,6,Params);
                         NumSection = Params[ 0 ];
+                        if ( NumSection<0 || NumSection>=NBR_SECTIONS )
+                        {
+                            NbrDropped++;
+                            break;
+                        }
                         pSection = &SectionArray[ NumSection ];
                         pSection->Used = TRUE;
                         pSection->Language = Params[ 1 ];
@@ -816,6 +903,7 @@ pSection->Name, pSection->Language, pSection->SubRoutineNumber, pSection->FirstR
         }
         while(LineOk);
         fclose(File);
+        WarnObjectsDropped( NbrDropped, _("sections"), NBR_SECTIONS, "numSections" );
         Okay = TRUE;
     }
     return (Okay);
@@ -1020,9 +1108,11 @@ char LoadSymbols(char * FileName)
 	char Line[300];
 	char * LineOk;
 	int NumSymbol = 0;
+	int NbrDropped = 0;
 	char *PtrStrings[ 4 ];
 	int LgtMaxStrings[ 4 ];
 	StrSymbol * pSymbol;
+	NbrStringsTruncated = 0;
 	File = fopen(FileName,"rt");
 	if (File)
 	{
@@ -1046,6 +1136,11 @@ char LoadSymbols(char * FileName)
 						}
 						break;
 					default:
+						if ( NumSymbol>=NBR_SYMBOLS )
+						{
+							NbrDropped++;
+							break;
+						}
 						pSymbol = &SymbolArray[ NumSymbol ];
 						PtrStrings[ 0 ] = pSymbol->VarName; LgtMaxStrings[ 0 ] = LGT_VAR_NAME;
 						PtrStrings[ 1 ] = pSymbol->Symbol; LgtMaxStrings[ 1 ] = LGT_SYMBOL_STRING;
@@ -1061,6 +1156,10 @@ char LoadSymbols(char * FileName)
 		}
 		while(LineOk);
 		fclose(File);
+		WarnObjectsDropped( NbrDropped, _("symbols"), NBR_SYMBOLS, "numSymbols" );
+		if ( NbrStringsTruncated>0 )
+			AddLoadWarning( _("%d symbol names or comments too long, truncated to %d / %d characters."),
+				NbrStringsTruncated, LGT_SYMBOL_STRING-1, LGT_SYMBOL_COMMENT-1 );
 		Okay = TRUE;
 	}
 SymbolsAutoAssign();	
@@ -1301,8 +1400,29 @@ void DeleteTheDefaultSection( )
 }
 
 static char FileName[500];
+// rungs files numbered beyond the rungs allocated are not loaded by LoadAllRungs()
+static void WarnRungsNotLoaded( char * DatasDirectory )
+{
+	DIR *pDir;
+	struct dirent *pEnt;
+	int NumRung;
+	int NbrDropped = 0;
+	pDir = opendir( DatasDirectory );
+	if ( pDir )
+	{
+		while ( (pEnt = readdir(pDir))!=NULL )
+		{
+			if ( sscanf( pEnt->d_name, FILE_PREFIX"rung_%d.csv", &NumRung )==1 && NumRung>=NBR_RUNGS )
+				NbrDropped++;
+		}
+		closedir( pDir );
+	}
+	WarnObjectsDropped( NbrDropped, _("rungs"), NBR_RUNGS, "numRungs" );
+}
+
 void LoadAllLadderDatas(char * DatasDirectory)
 {
+	LoadWarnings[ 0 ] = '\0';
 	ClassicLadder_InitAllDatas( );
 	// not necessary to have the default section, as we will load a working project
 	// and annoying if the section (with internal number 0) has been deleted in this project !
@@ -1352,6 +1472,7 @@ void LoadAllLadderDatas(char * DatasDirectory)
 		SectionArray[ 0 ].FirstRung = InfosGene->FirstRung;
 		SectionArray[ 0 ].LastRung = InfosGene->LastRung;
 	}
+	WarnRungsNotLoaded( DatasDirectory );
 #ifdef SEQUENTIAL_SUPPORT
 	snprintf(FileName, sizeof(FileName),"%s/"FILE_PREFIX"sequential.csv",DatasDirectory);
 //	printf("Loading sequential data from %s\n",FileName);
