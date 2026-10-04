@@ -287,7 +287,7 @@ void OpenEditWindow( GtkAction * ActionOpen, gboolean OpenIt )
 				winy = mainy;
 			}
 			printf("to move edit window: x%d,y%d,w%d,h%d => x%d,y%d,w%d,h%d\n",mainx,mainy,mainw,mainh,winx,winy,winw,winh);
-			gtk_window_move( GTK_WINDOW(EditWindow), winx,winh );
+			gtk_window_move( GTK_WINDOW(EditWindow), winx,winy );
 			FirstOpenToSetPosition = TRUE;
         }
 	}
@@ -315,7 +315,7 @@ char ConvertNumElementInToolbarPosisXY( int NumToolbar, int NumElementWanted, in
 				End = TRUE;
 			else
 				ScanX++;
-			if ( ScanX>NBR_ELE_TOOLBAR_X_MAX )
+			if ( ScanX>=NBR_ELE_TOOLBAR_X_MAX )
 			{
 				ScanX = 0;
 				ScanY++;
