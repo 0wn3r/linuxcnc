@@ -110,6 +110,10 @@ void InitTempDir( void )
 	if ( TmpEnv==NULL )
 		TmpEnv = EMC2_TMP_DIR;
 
+#ifndef __WIN32__
+	// the base temp directory may not exist yet (e.g. when started from halrun)
+	mkdir( TmpEnv, S_IRWXU );
+#endif
 	// get a single name directory
 	snprintf(TmpDirectory, sizeof(TmpDirectory), "%s/classicladder_tmp_XXXXXX", TmpEnv );
 #ifndef __WIN32__
