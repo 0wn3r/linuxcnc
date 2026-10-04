@@ -42,7 +42,7 @@ int comedi_to_open_mask;
 #ifdef DYNAMIC_PLCSIZE
 int numRungs=NBR_RUNGS_DEF, numBits=NBR_BITS_DEF,numWords=NBR_WORDS_DEF, numTimers=NBR_TIMERS_DEF, numMonostables=NBR_MONOSTABLES_DEF;
 int numCounters=NBR_COUNTERS_DEF,numTimersIec=NBR_TIMERS_IEC_DEF,numPhysInputs=NBR_PHYS_INPUTS_DEF, numPhysOutputs=NBR_PHYS_OUTPUTS_DEF, numArithmExpr=NBR_ARITHM_EXPR_DEF, numSections=NBR_SECTIONS_DEF;
-int numSymbols=NBR_SYMBOLS_DEF,numS32in=NBR_PHYS_WORDS_INPUTS_DEF,numS32out=NBR_PHYS_WORDS_OUTPUTS_DEF;
+int numSymbols=0,numS32in=NBR_PHYS_WORDS_INPUTS_DEF,numS32out=NBR_PHYS_WORDS_OUTPUTS_DEF;
 int numFloatIn=NBR_PHYS_FLOAT_INPUTS_DEF,numFloatOut=NBR_PHYS_FLOAT_OUTPUTS_DEF;
 RTAPI_MP_INT(numRungs, "i");
 RTAPI_MP_INT(numBits, "i");
@@ -257,8 +257,9 @@ void rtapi_app_exit(void) {
 
 // this function copies any requested (from the cmd line) changes to ladder element amounts to GeneralParamsMirror
 // so memory allotment and pin numbers can be varied. Note no error checking is done.
-// Symbols allotment is calculated to be large enough to have symbols for all the elements unless specified smaller
-// on the command line (the symbols window will only assign -GeneralParamsMirror.SizesInfos.nbr_symbols- number of symbols )
+// Symbols allotment is calculated to be large enough to have a symbol for each of the elements (they are all
+// auto-assigned one when a project is loaded), plus some room for symbols on attributes like %TM0.Q.
+// A bigger numSymbols can be given on the command line, a smaller one would drop symbols when saving the project.
 void CopySizesInfosFromModuleParams( void ) {
 	plc_sizeinfo_s *pSizesInfos;
 	pSizesInfos = &GeneralParamsMirror.SizesInfos;
@@ -299,7 +300,12 @@ void CopySizesInfosFromModuleParams( void ) {
         GeneralParamsMirror.SizesInfos.nbr_symbols += pSizesInfos->nbr_phys_inputs + pSizesInfos->nbr_phys_outputs ;
         GeneralParamsMirror.SizesInfos.nbr_symbols += pSizesInfos->nbr_phys_words_inputs + pSizesInfos->nbr_phys_words_outputs;
         GeneralParamsMirror.SizesInfos.nbr_symbols += pSizesInfos->nbr_phys_float_inputs + pSizesInfos->nbr_phys_float_outputs + NBR_ERROR_BITS_DEF ;
-	if (numSymbols < GeneralParamsMirror.SizesInfos.nbr_symbols ) {  GeneralParamsMirror.SizesInfos.nbr_symbols = numSymbols;  }
+	if ( numSymbols>0 && numSymbols<GeneralParamsMirror.SizesInfos.nbr_symbols )
+		rtapi_print_msg(RTAPI_MSG_WARN, "CLASSICLADDER: numSymbols=%d is too small for the %d variables, using %d\n",
+			numSymbols, GeneralParamsMirror.SizesInfos.nbr_symbols, GeneralParamsMirror.SizesInfos.nbr_symbols + NBR_SYMBOLS_EXTRA );
+	GeneralParamsMirror.SizesInfos.nbr_symbols += NBR_SYMBOLS_EXTRA;
+	if ( numSymbols>GeneralParamsMirror.SizesInfos.nbr_symbols )
+		GeneralParamsMirror.SizesInfos.nbr_symbols = numSymbols;
     
 	#endif
 }

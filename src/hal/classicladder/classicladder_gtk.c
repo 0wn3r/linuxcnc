@@ -73,6 +73,7 @@ extern GtkWidget *SpyBoolVarsWindow, *SpyFreeVarsWindow;
 #include "vars_access.h"
 #include "calc.h"
 #include "files_project.h"
+#include "files.h"
 #include "edit.h"
 #include "edit_gtk.h"
 #include "editproperties_gtk.h"
@@ -416,6 +417,8 @@ void LoadNewLadder()
 	ProjectLoadedOk = LoadProjectFiles( InfosGene->CurrentProjectFileName );
 	if ( !ProjectLoadedOk )
 		ShowMessageBox( _("Load Error"), _("Failed to load the project file..."), _("Ok") );
+	else
+		ShowLoadWarnings( );
 	UpdateAllGtkWindows( );
         UpdateWindowTitleWithProjectName( );
 	MessageInStatusBar( ProjectLoadedOk?_("Project loaded (stopped)."):_("Project failed to load..."));
@@ -677,6 +680,13 @@ void ShowMessageBox(const char * title, const char * text, const char * button)
 	gtk_window_set_transient_for(GTK_WINDOW(dialog),GTK_WINDOW(RungWindow));
 	gtk_window_set_position(GTK_WINDOW(dialog),GTK_WIN_POS_CENTER_ON_PARENT);
 	gtk_widget_show_all (dialog);
+}
+
+// what could not be loaded in the project would be lost when saving it, so tell it now
+void ShowLoadWarnings( void )
+{
+	if ( LoadWarnings[ 0 ]!='\0' )
+		ShowMessageBox( _("Project not completely loaded"), LoadWarnings, _("Ok") );
 }
 
 // error message for a variable name that could not be parsed,

@@ -273,6 +273,7 @@ int main( int   argc, char *argv[] )
 						if (pathswitch){   rtapi_strxcpy( InfosGene->CurrentProjectFileName, NewPath );   }
 						UpdateWindowTitleWithProjectName( );
 						MessageInStatusBar( ProjectLoadedOk?_("Project loaded and running"):_("Project failed to load..."));
+						if (ProjectLoadedOk) ShowLoadWarnings( );
 						if (!ProjectLoadedOk) 
 						{  
 							   ClassicLadder_InitAllDatas( );   

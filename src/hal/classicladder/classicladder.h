@@ -43,6 +43,7 @@
 #define NBR_ARITHM_EXPR_DEF 100
 #define NBR_SECTIONS_DEF 10
 #define NBR_SYMBOLS_DEF 200
+#define NBR_SYMBOLS_EXTRA 100 /* added to one symbol per variable, see CopySizesInfosFromModuleParams() */
 #define NBR_PHYS_WORDS_INPUTS_DEF 10
 #define NBR_PHYS_WORDS_OUTPUTS_DEF 10
 #define NBR_PHYS_FLOAT_INPUTS_DEF 10

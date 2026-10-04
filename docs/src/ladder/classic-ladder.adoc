@@ -101,6 +101,15 @@ If you do not configure the number of ladder objects ClassicLadder will use the 
 
 Objects of most interest are numPhysInputs, numPhysOutputs, numS32in, and numS32out.
 
+By default numSymbols is set to one symbol per variable (each variable is given
+a symbol name automatically) plus 100 for your own extra symbols.
+A larger value can be given, a smaller one is ignored.
+
+If a ladder project contains more objects than allocated (for example more
+symbols, counters, arithmetic expressions or rungs), the objects that do not fit
+are not loaded and ClassicLadder shows a warning naming the parameter to raise.
+Saving the project at that point would remove them from the file.
+
 Changing these numbers will change the number of HAL bit pins available.
 numPhysInputs and numPhysOutputs control how many HAL bit (on/off) pins are available.
 numS32in and numS32out control how many HAL signed integers (+- integer range) pins are available.

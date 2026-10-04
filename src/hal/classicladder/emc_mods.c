@@ -31,6 +31,7 @@
 #include "symbols.h"
 #include "vars_names.h"
 #include "emc_mods.h"
+#include "files.h"
 #include <rtapi_string.h>
 
 
@@ -213,6 +214,7 @@ void SymbolsAutoAssign (void)
 		{BITINS=0,BITOUTS,BITS,WORDS,S32INS,S32OUTS,FLOATINS,FLOATOUTS,TIMERS,IEC_TIMERS,MONOS,COUNTERS,ERRORS};
 #define NUMVARTYPES 13
 	int scansymb,found = FALSE,i,v,numofvariable;
+	int NbrWithoutSymbol = 0;
 	char Buffer[30],SymbolBuf[5],CommentBuf[40]="";
 	
         for (v=0;v<NUMVARTYPES;v++)
@@ -328,7 +330,12 @@ void SymbolsAutoAssign (void)
 		                         }	
 		                scansymb ++;// keep looking for empty spot if not done
 	                         }	
+	                 if ( found == FALSE && scansymb>=NBR_SYMBOLS )
+	                        NbrWithoutSymbol++;// symbols table full
                 }
           }
+         if ( NbrWithoutSymbol>0 )
+                AddLoadWarning( _("Symbols table full (%d entries): %d variables got no symbol name, raise numSymbols= on the loadrt classicladder_rt line."),
+                                NBR_SYMBOLS, NbrWithoutSymbol );
          return;
 }
