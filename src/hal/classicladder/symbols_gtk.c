@@ -202,6 +202,59 @@ void OpenSymbolsWindow( GtkAction * ActionOpen, gboolean OpenIt )
 	}
 }
 
+// sort the strings like a person would: "%B2" before "%B10" (runs of digits
+// are compared by their value), and the empty (unused) lines at the end.
+static gint NaturalSortCompare( GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer data )
+{
+	gint Col = GPOINTER_TO_INT( data );
+	gchar *StrA = NULL, *StrB = NULL;
+	const char *pA, *pB;
+	gint Result = 0;
+	gtk_tree_model_get( model, a, Col, &StrA, -1 );
+	gtk_tree_model_get( model, b, Col, &StrB, -1 );
+	pA = StrA?StrA:"";
+	pB = StrB?StrB:"";
+	if ( *pA=='\0' || *pB=='\0' )
+	{
+		Result = (*pA=='\0') - (*pB=='\0');
+	}
+	else
+	{
+		while( Result==0 && *pA!='\0' && *pB!='\0' )
+		{
+			if ( g_ascii_isdigit( *pA ) && g_ascii_isdigit( *pB ) )
+			{
+				const char *StartA, *StartB;
+				int LgtA, LgtB;
+				while( *pA=='0' && g_ascii_isdigit( pA[1] ) )
+					pA++;
+				while( *pB=='0' && g_ascii_isdigit( pB[1] ) )
+					pB++;
+				StartA = pA;
+				StartB = pB;
+				while( g_ascii_isdigit( *pA ) )
+					pA++;
+				while( g_ascii_isdigit( *pB ) )
+					pB++;
+				LgtA = pA-StartA;
+				LgtB = pB-StartB;
+				Result = (LgtA!=LgtB)?(LgtA-LgtB):strncmp( StartA, StartB, LgtA );
+			}
+			else
+			{
+				Result = g_ascii_tolower( *pA ) - g_ascii_tolower( *pB );
+				pA++;
+				pB++;
+			}
+		}
+		if ( Result==0 )
+			Result = (*pA!='\0') - (*pB!='\0');
+	}
+	g_free( StrA );
+	g_free( StrB );
+	return Result;
+}
+
 void SymbolsInitGtk()
 {
 	GtkWidget  *scrolled_win, *vbox;
@@ -233,6 +286,7 @@ void SymbolsInitGtk()
 		gtk_tree_view_append_column( GTK_TREE_VIEW(ListView), column );
 		gtk_tree_view_column_set_resizable( column, TRUE );
 		gtk_tree_view_column_set_sort_column_id( column, ScanCol );
+		gtk_tree_sortable_set_sort_func( GTK_TREE_SORTABLE(ListStore), ScanCol, NaturalSortCompare, GINT_TO_POINTER(ScanCol), NULL );
 	}
 //	avail since gtk v2.10...?
 //	gtk_tree_view_set_grid_lines( GTK_TREE_VIEW(ListView), GTK_TREE_VIEW_GRID_LINES_BOTH );
