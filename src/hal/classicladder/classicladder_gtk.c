@@ -97,15 +97,16 @@ static gint configure_event( GtkWidget         *widget,
 	if (pixmap)
 		gdk_pixmap_unref(pixmap);
 
+	// wider than the window, for the ladder zoomed in (scrolled horizontally)
 	pixmap = gdk_pixmap_new(widget->window,
-							widget->allocation.width,
+							widget->allocation.width*LADDER_ZOOM_MAX/100+50,
 							widget->allocation.height,
 							-1);
 	gdk_draw_rectangle (pixmap,
 						widget->style->white_gc,
 						TRUE,
 						0, 0,
-						widget->allocation.width,
+						widget->allocation.width*LADDER_ZOOM_MAX/100+50,
 						widget->allocation.height);
 	return TRUE;
 }
@@ -114,14 +115,43 @@ static gint configure_event( GtkWidget         *widget,
 static gint expose_event( GtkWidget      *widget,
                         GdkEventExpose *event )
 {
+	// the ladder is drawn without its horizontal scroll (only when zoomed in)
+	int ShiftX = ( SectionArray[ InfosGene->CurrentSection ].Language==SECTION_IN_LADDER )?InfosGene->HScrollValue:0;
 	gdk_draw_pixmap(widget->window,
 					widget->style->fg_gc[GTK_WIDGET_STATE (widget)],
 					pixmap,
-					event->area.x, event->area.y,
+					event->area.x+ShiftX, event->area.y,
 					event->area.x, event->area.y,
 					event->area.width, event->area.height);
 
 	return FALSE;
+}
+
+// horizontal scrollbar for the ladder, only needed when zoomed in
+static void UpdateLadderHScrollBar( void )
+{
+	int LadderWidth = InfosGene->BlockWidth*RUNG_WIDTH+OFFSET_X+5;
+	int AreaWidth = GTK_WIDGET(drawing_area)->allocation.width;
+	if ( LadderWidth>AreaWidth )
+	{
+		AdjustHScrollBar->lower = 0;
+		AdjustHScrollBar->upper = LadderWidth;
+		AdjustHScrollBar->step_increment = InfosGene->BlockWidth;
+		AdjustHScrollBar->page_increment = AreaWidth;
+		AdjustHScrollBar->page_size = AreaWidth;
+		if ( AdjustHScrollBar->value>LadderWidth-AreaWidth )
+			AdjustHScrollBar->value = LadderWidth-AreaWidth;
+		gtk_adjustment_changed( AdjustHScrollBar );
+		gtk_adjustment_value_changed( AdjustHScrollBar );
+		gtk_widget_show( HScrollBar );
+	}
+	else
+	{
+		AdjustHScrollBar->value = 0;
+		gtk_adjustment_changed( AdjustHScrollBar );
+		gtk_adjustment_value_changed( AdjustHScrollBar );
+		gtk_widget_hide( HScrollBar );
+	}
 }
 
 void UpdateVScrollBar()
@@ -160,7 +190,7 @@ void UpdateVScrollBar()
 		AdjustVScrollBar->page_size = InfosGene->PageHeight;
 		gtk_adjustment_changed( AdjustVScrollBar );
 		gtk_adjustment_value_changed( AdjustVScrollBar );
-		gtk_widget_hide( HScrollBar );
+		UpdateLadderHScrollBar( );
 //        gtk_widget_show( entrylabel );
 //        gtk_widget_show( entrycomment );
 	}
@@ -260,6 +290,7 @@ static gint button_press_event( GtkWidget *widget, GdkEventButton *event )
 		if (EditDatas.ModeEdit)
 		{
 			EditElementInThePage(event->x,event->y);
+			UpdateUndoButton( );
 		}
 		else
 		{
@@ -376,7 +407,8 @@ void CheckDispSymbols_toggled( )
 }
 
 
-void StoreDirectorySelected(
+// returns FALSE if no file has been given
+char StoreDirectorySelected(
 	#ifndef GTK2
 GtkFileSelection *selector, 
 	#else
@@ -388,28 +420,39 @@ char cForLoadingProject)
 	
     TempDir = 
 	#ifndef GTK2
-	gtk_file_selection_get_filename (GTK_FILE_SELECTION(FileSelector));
+	(char *)gtk_file_selection_get_filename (GTK_FILE_SELECTION(FileSelector));
 	#else
 	gtk_file_chooser_get_filename (GTK_FILE_CHOOSER(FileSelector));
 	#endif
+    // the chooser can give no file (for example a path typed while in "Recently Used")
+    if ( TempDir==NULL || TempDir[ 0 ]=='\0' )
+    {
+        ShowMessageBox( _("Error"), _("No file selected. Please select a file in the list."), _("Ok") );
+        return FALSE;
+    }
     if ( cForLoadingProject )
         VerifyDirectorySelected( TempDir );
     else
         rtapi_strxcpy( InfosGene->CurrentProjectFileName, TempDir );
+	#ifdef GTK2
+    g_free( TempDir );
+	#endif
+    return TRUE;
 }
 
 
 void LoadNewLadder()
 {
 	char ProjectLoadedOk;
-    StoreDirectorySelected(
+	char FileGiven = StoreDirectorySelected(
 	#ifndef GTK2
 	GTK_FILE_SELECTION(FileSelector)
 	#else
 	GTK_FILE_CHOOSER(FileSelector)
 	#endif
-	
-, TRUE/*cForLoadingProject*/);
+	, TRUE/*cForLoadingProject*/);
+	if ( !FileGiven )
+		return;
 	
     if (InfosGene->LadderState==STATE_RUN)
         ButtonRunStop_click();
@@ -429,7 +472,18 @@ void LoadNewLadder()
 #endif
     InfosGene->LadderState = STATE_STOP;
 }
-static char QuitAfterSaveAs = FALSE;
+// action to do once the project has been saved with "Save As" (quit, new, load)
+static void (*ActionAfterSaveAs)( void ) = NULL;
+static void (*PendingAction)( void ) = NULL;
+static void ConfirmUnsavedChanges( const char * Title, const char * Question, const char * DiscardLabel, void (*Action)( void ), char ForQuit );
+static gboolean RunPendingAction( gpointer data )
+{
+	void (*Action)( void ) = PendingAction;
+	PendingAction = NULL;
+	if ( Action )
+		Action( );
+	return FALSE;
+}
 void ButtonSaveAs_click( );
 
 static void ShowSavedInStatusBar( void )
@@ -455,39 +509,61 @@ void ButtonSave_click()
 
 void SaveAsLadder(void)
 {
-    StoreDirectorySelected(
+	char FileGiven = StoreDirectorySelected(
 	#ifndef GTK2
 	GTK_FILE_SELECTION(FileSelector)
 	#else
 	GTK_FILE_CHOOSER(FileSelector)
 	#endif
-	
 	, FALSE/*cForLoadingProject*/);
+	if ( !FileGiven )
+		return;
 	if ( !SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
 		ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
 	else
 		ShowSavedInStatusBar( );
         UpdateWindowTitleWithProjectName( );
-	if ( QuitAfterSaveAs )
+	if ( ActionAfterSaveAs )
 	{
-		QuitAfterSaveAs = FALSE;
+		// saved fine? then do it once the file chooser has gone
 		if ( !InfosGene->AskConfirmationToQuit )
-			DoQuitGtkApplication( );
+		{
+			PendingAction = ActionAfterSaveAs;
+			g_idle_add( RunPendingAction, NULL );
+		}
+		ActionAfterSaveAs = NULL;
 	}
 }
 
 #ifdef GTK2
+// the chooser can give no file (for example a path typed while in "Recently Used"):
+// then keep it open, so that the user can pick one
+static char FileChooserHasAFile( GtkDialog * dialog )
+{
+	char * File = gtk_file_chooser_get_filename( GTK_FILE_CHOOSER(dialog) );
+	if ( File==NULL )
+	{
+		ShowMessageBox( _("Error"), _("No file selected. Please select a file in the list."), _("Ok") );
+		return FALSE;
+	}
+	g_free( File );
+	return TRUE;
+}
 void
 on_filechooserdialog_save_response(GtkDialog  *dialog,gint response_id,gpointer user_data)
 {
+	if ( (response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK) && !FileChooserHasAFile( dialog ) )
+		return;
 	if(response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK)
 		SaveAsLadder();
-	QuitAfterSaveAs = FALSE;
+	ActionAfterSaveAs = NULL;
 	gtk_widget_destroy(GTK_WIDGET(dialog));
 }
 void
 on_filechooserdialog_load_response(GtkDialog  *dialog,gint response_id,gpointer user_data)
 {
+	if ( (response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK) && !FileChooserHasAFile( dialog ) )
+		return;
 	if(response_id==GTK_RESPONSE_ACCEPT || response_id==GTK_RESPONSE_OK)
 		LoadNewLadder();
 	gtk_widget_destroy(GTK_WIDGET(dialog));
@@ -579,7 +655,11 @@ void DoNewProject( void )
 
 void ButtonNew_click()
 {
-	ShowConfirmationBox(_("New"),_("Do you really want to clear all data ?"),DoNewProject);
+	if ( InfosGene->AskConfirmationToQuit || EditDatas.ModeEdit )
+		ConfirmUnsavedChanges( _("New"), _("Save the changes to the project before starting a new one?"),
+			_("_Discard changes"), DoNewProject, FALSE );
+	else
+		DoNewProject( );
 }
 void DoLoadProject()
 {
@@ -588,8 +668,9 @@ void DoLoadProject()
 
 void ButtonLoad_click()
 {
-	if ( InfosGene->AskConfirmationToQuit )
-		ShowConfirmationBox( _("Sure?"), _("Do you really want to load another project ?\nIf not saved, all modifications on the current project will be lost  \n"), DoLoadProject );
+	if ( InfosGene->AskConfirmationToQuit || EditDatas.ModeEdit )
+		ConfirmUnsavedChanges( _("Load"), _("Save the changes to the project before loading another one?"),
+			_("_Discard changes"), DoLoadProject, FALSE );
 	else
 		DoLoadProject( );
 }
@@ -761,58 +842,66 @@ void DoQuitGtkApplication( void )
 {
 	gtk_widget_destroy( RungWindow ); //sends signal "destroy" that will call QuitAppliGtk()...
 }
-#define RESPONSE_QUIT_SAVE 1
-#define RESPONSE_QUIT_DISCARD 2
-static void QuitUnsavedResponse( GtkDialog * Dlg, gint Response, gpointer data )
+#define RESPONSE_UNSAVED_SAVE 1
+#define RESPONSE_UNSAVED_DISCARD 2
+static void (*ActionIfNotCancelled)( void ) = NULL;
+static void UnsavedChangesResponse( GtkDialog * Dlg, gint Response, gpointer data )
 {
+	void (*Action)( void ) = ActionIfNotCancelled;
+	ActionIfNotCancelled = NULL;
 	gtk_widget_destroy( GTK_WIDGET(Dlg) );
-	if ( Response==RESPONSE_QUIT_DISCARD )
+	if ( Response!=RESPONSE_UNSAVED_DISCARD && Response!=RESPONSE_UNSAVED_SAVE )
+		return;
+	// the rung under edit is not applied: leave the edit mode before going on
+	if ( EditDatas.ModeEdit )
+		ButtonCancelCurrentRung( );
+	if ( Response==RESPONSE_UNSAVED_DISCARD )
 	{
-		DoQuitGtkApplication( );
+		Action( );
 	}
-	else if ( Response==RESPONSE_QUIT_SAVE )
+	else if ( InfosGene->CurrentProjectFileName[ 0 ]=='\0' )
 	{
-		if ( InfosGene->CurrentProjectFileName[ 0 ]=='\0' )
-		{
-			// quit once the project has been saved in the file chooser
-			QuitAfterSaveAs = TRUE;
-			ButtonSaveAs_click( );
-		}
-		else if ( SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
-		{
-			DoQuitGtkApplication( );
-		}
-		else
-		{
-			ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
-		}
+		// done once the project has been saved in the file chooser
+		ActionAfterSaveAs = Action;
+		ButtonSaveAs_click( );
+	}
+	else if ( SaveProjectFiles( InfosGene->CurrentProjectFileName ) )
+	{
+		ShowSavedInStatusBar( );
+		Action( );
+	}
+	else
+	{
+		ShowMessageBox( _("Save Error"), _("Failed to save the project file..."), _("Ok") );
 	}
 }
-static void ConfirmQuitWithUnsavedChanges( void )
+// ask to save the modifications before an action that loses them (quit, new, load)
+static void ConfirmUnsavedChanges( const char * Title, const char * Question, const char * DiscardLabel, void (*Action)( void ), char ForQuit )
 {
 	GtkWidget * Dlg = gtk_message_dialog_new( GTK_WINDOW(RungWindow), GTK_DIALOG_MODAL,
-		GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE, "%s",
-		_("Save the changes to the project before quitting?") );
+		GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE, "%s", Question );
 	char SecondaryText[ 300 ];
 	snprintf( SecondaryText, sizeof(SecondaryText), "%s%s%s",
 		_("If you don't save, the modifications will be lost."),
 		EditDatas.ModeEdit?_("\nThe rung under edit has not been applied with Ok and is not saved."):"",
-		modmaster?_("\nMODBUS will stop if you quit."):"" );
+		(ForQuit && modmaster)?_("\nMODBUS will stop if you quit."):"" );
 	gtk_message_dialog_format_secondary_text( GTK_MESSAGE_DIALOG(Dlg), "%s", SecondaryText );
 	gtk_dialog_add_buttons( GTK_DIALOG(Dlg),
-		_("Quit _without saving"), RESPONSE_QUIT_DISCARD,
+		DiscardLabel, RESPONSE_UNSAVED_DISCARD,
 		GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
-		GTK_STOCK_SAVE, RESPONSE_QUIT_SAVE, NULL );
-	gtk_dialog_set_default_response( GTK_DIALOG(Dlg), RESPONSE_QUIT_SAVE );
-	gtk_window_set_title( GTK_WINDOW(Dlg), _("Quit") );
-	g_signal_connect( Dlg, "response", G_CALLBACK(QuitUnsavedResponse), NULL );
+		GTK_STOCK_SAVE, RESPONSE_UNSAVED_SAVE, NULL );
+	gtk_dialog_set_default_response( GTK_DIALOG(Dlg), RESPONSE_UNSAVED_SAVE );
+	gtk_window_set_title( GTK_WINDOW(Dlg), Title );
+	ActionIfNotCancelled = Action;
+	g_signal_connect( Dlg, "response", G_CALLBACK(UnsavedChangesResponse), NULL );
 	gtk_widget_show_all( Dlg );
 }
 void ConfirmQuit( void )
 {
 	// a rung under edit is not applied yet: also a modification that would be lost
 	if ( InfosGene->AskConfirmationToQuit || EditDatas.ModeEdit )
-		ConfirmQuitWithUnsavedChanges( );
+		ConfirmUnsavedChanges( _("Quit"), _("Save the changes to the project before quitting?"),
+			_("Quit _without saving"), DoQuitGtkApplication, TRUE );
 	else{
              if (!modmaster)  
                 {  
@@ -846,8 +935,56 @@ static void ScrollLadderView( gdouble Delta )
 	gtk_adjustment_set_value( AdjustVScrollBar, NewValue );
 }
 
+static void ScrollLadderViewHoriz( gdouble Delta )
+{
+	gdouble NewValue = AdjustHScrollBar->value + Delta;
+	if ( !GTK_WIDGET_VISIBLE( HScrollBar ) )
+		return;
+	if ( NewValue > AdjustHScrollBar->upper - AdjustHScrollBar->page_size )
+		NewValue = AdjustHScrollBar->upper - AdjustHScrollBar->page_size;
+	if ( NewValue < AdjustHScrollBar->lower )
+		NewValue = AdjustHScrollBar->lower;
+	gtk_adjustment_set_value( AdjustHScrollBar, NewValue );
+}
+
+// Step: +1 zoom in, -1 zoom out, 0 back to fit the width of the window
+static void ZoomLadderView( int Step )
+{
+	char Buff[ 50 ];
+	int NewZoom = ( Step==0 )?100:LadderZoomPercent+Step*25;
+	if ( SectionArray[ InfosGene->CurrentSection ].Language!=SECTION_IN_LADDER )
+		return;
+	if ( NewZoom<LADDER_ZOOM_MIN )
+		NewZoom = LADDER_ZOOM_MIN;
+	if ( NewZoom>LADDER_ZOOM_MAX )
+		NewZoom = LADDER_ZOOM_MAX;
+	LadderZoomPercent = NewZoom;
+	DrawCurrentSection( );
+	UpdateVScrollBar( );
+	snprintf( Buff, sizeof(Buff), _("Zoom %d%% (Ctrl+wheel, Ctrl+0 to fit)"), LadderZoomPercent );
+	MessageInStatusBar( Buff );
+}
+
 static gint scroll_event( GtkWidget *widget, GdkEventScroll *event )
 {
+	if ( event->state & GDK_CONTROL_MASK )
+	{
+		if ( event->direction==GDK_SCROLL_UP )
+			ZoomLadderView( 1 );
+		else if ( event->direction==GDK_SCROLL_DOWN )
+			ZoomLadderView( -1 );
+		return TRUE;
+	}
+	if ( event->direction==GDK_SCROLL_LEFT || ( (event->state & GDK_SHIFT_MASK) && event->direction==GDK_SCROLL_UP ) )
+	{
+		ScrollLadderViewHoriz( -AdjustHScrollBar->step_increment );
+		return TRUE;
+	}
+	if ( event->direction==GDK_SCROLL_RIGHT || ( (event->state & GDK_SHIFT_MASK) && event->direction==GDK_SCROLL_DOWN ) )
+	{
+		ScrollLadderViewHoriz( AdjustHScrollBar->step_increment );
+		return TRUE;
+	}
 	if ( !GTK_WIDGET_IS_SENSITIVE( VScrollBar ) )
 		return FALSE;
 	if ( event->direction==GDK_SCROLL_DOWN )
@@ -871,8 +1008,28 @@ static gint RungWindowKeyPressEvent( GtkWidget *widget, GdkEventKey *event, gpoi
 		ConfirmQuit( );
 		return TRUE;
 	}
+	if ( ControlKey && ( event->keyval==GDK_plus || event->keyval==GDK_equal || event->keyval==GDK_KP_Add ) )
+	{
+		ZoomLadderView( 1 );
+		return TRUE;
+	}
+	if ( ControlKey && ( event->keyval==GDK_minus || event->keyval==GDK_KP_Subtract ) )
+	{
+		ZoomLadderView( -1 );
+		return TRUE;
+	}
+	if ( ControlKey && ( event->keyval==GDK_0 || event->keyval==GDK_KP_0 ) )
+	{
+		ZoomLadderView( 0 );
+		return TRUE;
+	}
 	if ( EditDatas.ModeEdit )
 	{
+		if ( ControlKey && ( event->keyval==GDK_z || event->keyval==GDK_Z ) )
+		{
+			ButtonUndo( );
+			return TRUE;
+		}
 		if ( event->keyval==GDK_Escape )
 		{
 			ButtonCancelCurrentRung( );
@@ -914,6 +1071,7 @@ void RungWindowInitGtk()
 	GtkWidget *ButtonPrint,*ButtonPrintPreview;
 #endif
 	GtkTooltips * TooltipsEntryLabel, * TooltipsEntryComment;
+	GtkWidget * LabelForEntry;
 
 	RungWindow = gtk_window_new (GTK_WINDOW_TOPLEVEL);
 	gtk_window_set_title ((GtkWindow *)RungWindow, _("Section Display"));
@@ -950,7 +1108,7 @@ void RungWindowInitGtk()
 	EditBanner = gtk_event_box_new( );
 	{
 		GdkColor BannerColor;
-		GtkWidget * BannerLabel = gtk_label_new( _("Editing: pick an element in the palette, then click where to put it.   Ok: Ctrl+Enter   Cancel: Esc") );
+		GtkWidget * BannerLabel = gtk_label_new( _("Editing: pick an element in the palette, then click where to put it.   Ok: Ctrl+Enter   Cancel: Esc   Undo: Ctrl+Z") );
 		gdk_color_parse( "#ffd75f", &BannerColor );
 		gtk_widget_modify_bg( EditBanner, GTK_STATE_NORMAL, &BannerColor );
 		gtk_misc_set_padding( GTK_MISC(BannerLabel), 4, 3 );
@@ -966,6 +1124,9 @@ void RungWindowInitGtk()
 	gtk_box_set_child_packing(GTK_BOX(vboxladder), hboxtop,
 		/*expand*/ FALSE, /*fill*/ FALSE, /*pad*/ 0, GTK_PACK_START);
 
+	LabelForEntry = gtk_label_new( _("Label:") );
+	gtk_box_pack_start( GTK_BOX(hboxtop), LabelForEntry, FALSE, FALSE, 3 );
+	gtk_widget_show( LabelForEntry );
 	TooltipsEntryLabel = gtk_tooltips_new();
 	entrylabel = gtk_entry_new();
 	gtk_widget_set_usize((GtkWidget *)entrylabel,80,0);
@@ -974,8 +1135,13 @@ void RungWindowInitGtk()
 	gtk_box_pack_start (GTK_BOX (hboxtop), entrylabel, FALSE, FALSE, 0);
 	gtk_tooltips_set_tip ( TooltipsEntryLabel, entrylabel, _("Label of the current selected rung"), NULL );
 	gtk_widget_show(entrylabel);
+	LabelForEntry = gtk_label_new( _("Comment:") );
+	gtk_box_pack_start( GTK_BOX(hboxtop), LabelForEntry, FALSE, FALSE, 3 );
+	gtk_widget_show( LabelForEntry );
 	TooltipsEntryComment = gtk_tooltips_new();
 	entrycomment = gtk_entry_new();
+	// grows with the window: keep its minimum small, the labels in front take some room
+	gtk_widget_set_usize((GtkWidget *)entrycomment,60,0);
 	gtk_entry_set_max_length((GtkEntry *)entrycomment,LGT_COMMENT-1);
 	gtk_entry_prepend_text((GtkEntry *)entrycomment,"");
 	gtk_box_pack_start (GTK_BOX (hboxtop), entrycomment, TRUE, TRUE, 0);

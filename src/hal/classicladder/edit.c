@@ -47,6 +47,10 @@
 #include "vars_names.h"
 #include <rtapi_string.h>
 
+/* one level of undo for the changes done with the mouse in the rung under edit */
+static StrRung UndoRung;
+static char UndoAvailable = FALSE;
+
 /* This array give for each special elements the size used */
 #define TYPEELERULE 0
 #define XSIZEELERULE 1
@@ -739,6 +743,7 @@ int FindFreeRung()
 
 void AddRung()
 {
+	UndoAvailable = FALSE;
 	InitBufferRungEdited( &EditDatas.Rung );
 	EditDatas.DoBeforeFinalCopy = MODE_ADD;
 	EditDatas.NumRung = FindFreeRung();
@@ -763,6 +768,7 @@ void InsertRung()
 
 void ModifyCurrentRung()
 {
+	UndoAvailable = FALSE;
 	CopyRungToRung(&RungArray[InfosGene->CurrentRung],&EditDatas.Rung);
 	EditDatas.DoBeforeFinalCopy = MODE_MODIFY;
 	EditDatas.NumRung = InfosGene->CurrentRung;
@@ -828,6 +834,97 @@ void DeleteCurrentRung()
 			}
 		}
 	}
+}
+
+static void SaveRungForUndo( void )
+{
+	CopyRungToRung( &EditDatas.Rung, &UndoRung );
+	UndoAvailable = TRUE;
+}
+char IsUndoAvailable( void )
+{
+	return EditDatas.ModeEdit && UndoAvailable;
+}
+void UndoLastChangeInRung( void )
+{
+	if ( !IsUndoAvailable( ) )
+		return;
+	CopyRungToRung( &UndoRung, &EditDatas.Rung );
+	UndoAvailable = FALSE;
+	EditDatas.ElementUnderEdit = NULL;
+	EditDatas.CurrentElementSizeX = 0;
+	EditDatas.CurrentElementSizeY = 0;
+	LoadElementProperties( NULL );
+}
+
+/* is the left side of this block powered, by the block on its left, */
+/* or through the vertical links of this column (same rules as StateOnLeft() in calc.c) */
+static char LeftSideConnected( StrRung * pRung, int x, int y )
+{
+	int Top = y, Bottom = y, ScanY;
+	if ( x==0 )
+		return TRUE;
+	while( Top>0 && pRung->Element[x][Top].ConnectedWithTop )
+		Top--;
+	while( Bottom<RUNG_HEIGHT-1 && pRung->Element[x][Bottom+1].ConnectedWithTop )
+		Bottom++;
+	for( ScanY=Top; ScanY<=Bottom; ScanY++ )
+	{
+		if ( pRung->Element[x-1][ScanY].Type!=ELE_FREE )
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* look for the usual mistakes in the rung under edit, before applying it. */
+/* returns the number of problems found, described in Report. */
+int CheckRungEdited( char * Report, int ReportSize )
+{
+	int x,y;
+	int NbrProblems = 0;
+	Report[ 0 ] = '\0';
+	for( y=0; y<RUNG_HEIGHT; y++ )
+	{
+		for( x=0; x<RUNG_WIDTH; x++ )
+		{
+			StrElement * pEle = &EditDatas.Rung.Element[x][y];
+			const char * Problem = NULL;
+			switch( pEle->Type )
+			{
+				case ELE_FREE:
+				case ELE_UNUSABLE:
+					continue;
+				case ELE_INPUT:
+				case ELE_INPUT_NOT:
+				case ELE_RISING_INPUT:
+				case ELE_FALLING_INPUT:
+				case ELE_OUTPUT:
+				case ELE_OUTPUT_NOT:
+				case ELE_OUTPUT_SET:
+				case ELE_OUTPUT_RESET:
+					if ( strcmp( CreateVarName( pEle->VarType, pEle->VarNum ), "???" )==0 )
+						Problem = _("has no valid variable");
+					break;
+			}
+			if ( Problem==NULL && !LeftSideConnected( &EditDatas.Rung, x, y ) )
+				Problem = _("is not connected on its left");
+			if ( Problem!=NULL )
+			{
+				NbrProblems++;
+				if ( NbrProblems<=6 )
+				{
+					char Line[ 120 ];
+					snprintf( Line, sizeof(Line), _("Column %d, line %d: the element %s.\n"), x+1, y+1, Problem );
+					rtapi_strlcat( Report, Line, ReportSize );
+				}
+				else if ( NbrProblems==7 )
+				{
+					rtapi_strlcat( Report, _("...and more.\n"), ReportSize );
+				}
+			}
+		}
+	}
+	return NbrProblems;
 }
 
 void CancelRungEdited()
@@ -1117,6 +1214,9 @@ void EditElementInRung(double x,double y)
 	if ( ConvertDoublesToRungCoor( x, y, &RungX, &RungY )
 		&& (EditDatas.NumElementSelectedInToolBar!=-1) )
 	{
+		// the pointer only selects: everything else may change the rung
+		if ( EditDatas.NumElementSelectedInToolBar!=EDIT_POINTER )
+			SaveRungForUndo( );
                  //printf ("x:%f Y:%f xx%f yy%f rungX=%d rungY=%d\n",x,y,x-RungX*InfosGene->BlockWidth, y-RungY*InfosGene->BlockHeight, RungX, RungY);
 		/* check for "unusable" blocks */
 		if (EditDatas.NumElementSelectedInToolBar==EDIT_POINTER || EditDatas.NumElementSelectedInToolBar==EDIT_ERASER )
@@ -1221,7 +1321,9 @@ void EditElementInThePage(double x,double y)
 	if ( iCurrentLanguage==SECTION_IN_LADDER )
 	{
 		if ( ( y >= InfosGene->OffsetCurrentRungDisplayed ) && ( y < InfosGene->OffsetCurrentRungDisplayed+InfosGene->BlockHeight*RUNG_HEIGHT ) )
-			EditElementInRung( x, y - InfosGene->OffsetCurrentRungDisplayed );
+			EditElementInRung( x+InfosGene->HScrollValue, y - InfosGene->OffsetCurrentRungDisplayed );
+		else
+			MessageInStatusBar( _("Only the rung under edit (with the grid) can be changed. Press Ok or Cancel to edit another one.") );
 	}
 #ifdef SEQUENTIAL_SUPPORT
 	if ( iCurrentLanguage==SECTION_IN_SEQUENTIAL )
@@ -1234,7 +1336,7 @@ char * GetLadderElePropertiesForStatusBar(double x,double y)
 	if ( ( y >= InfosGene->OffsetCurrentRungDisplayed ) && ( y < InfosGene->OffsetCurrentRungDisplayed+InfosGene->BlockHeight*RUNG_HEIGHT ) )
 	{
 		int RungX,RungY;
-		if ( ConvertDoublesToRungCoor( x, y - InfosGene->OffsetCurrentRungDisplayed, &RungX, &RungY ) )
+		if ( ConvertDoublesToRungCoor( x+InfosGene->HScrollValue, y - InfosGene->OffsetCurrentRungDisplayed, &RungX, &RungY ) )
 		{
 			StrElement * Element;
 			CheckForBlocksOfBigElement( &RungArray[InfosGene->CurrentRung], &RungX,&RungY );

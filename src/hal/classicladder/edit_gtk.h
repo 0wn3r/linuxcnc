@@ -15,5 +15,8 @@
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 void EditorButtonsAccordingSectionType( );
 void ButtonCancelCurrentRung();
+void ButtonOkCurrentRung();
+void UpdateUndoButton( void );
+void ButtonUndo( void );
 void OpenEditWindow( void );
 void EditorInitGtk();
