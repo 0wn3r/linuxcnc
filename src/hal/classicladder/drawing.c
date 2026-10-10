@@ -105,6 +105,9 @@ char * DisplayArithmExpr(char * Expr,int NumCarMax)
 	return Buffer;
 }
 
+// zoom applied to the texts (only while drawing the rungs)
+static int TextZoomPercent = 100;
+
 #ifdef GTK2
 /* Drawing text centered with GTK2. */
 /* if Height is -1, then drawing on top of BaseY given... */
@@ -120,6 +123,9 @@ void DrawTextWithOffsetGTK2( GdkPixmap * DrawPixmap, GdkGC * GcRef, int BaseX, i
 //	FontDesc = pango_font_description_from_string( "Courier New 8" );
 //	FontDesc = pango_font_description_from_string( "Lucida Bright 8" );
 	FontDesc = pango_font_description_from_string( "Lucida Sans 10" );
+	// follow the zoom of the ladder, so that the names still fit in the blocks
+	if ( TextZoomPercent!=100 )
+		pango_font_description_set_size( FontDesc, 10*PANGO_SCALE*TextZoomPercent/100 );
 	pango_layout_set_font_description( playout, FontDesc );
 	pango_font_description_free( FontDesc );
 
@@ -1073,9 +1079,14 @@ void DrawRungs()
 	if ( EditDatas.ModeEdit && EditDatas.DoBeforeFinalCopy == MODE_INSERT )
 		FlagAddOrInsertRung = TRUE;
 
-	// Clean all
-	gdk_draw_rectangle(pixmap, drawing_area->style->white_gc, TRUE,
-						0, 0, InfosGene->BlockWidth*RUNG_WIDTH+50, InfosGene->PageHeight+50);
+	TextZoomPercent = LadderZoomPercent;
+	// Clean all (the whole pixmap: after a zoom out, the previous bigger drawing must disappear)
+	{
+		gint PixmapWidth, PixmapHeight;
+		gdk_drawable_get_size( pixmap, &PixmapWidth, &PixmapHeight );
+		gdk_draw_rectangle(pixmap, drawing_area->style->white_gc, TRUE,
+							0, 0, PixmapWidth, PixmapHeight);
+	}
 
 	for (ScanY = InfosGene->OffsetHiddenTopRungDisplayed*-1; ScanY<InfosGene->PageHeight && !TheEnd; ScanY=ScanY+(InfosGene->BlockHeight*RUNG_HEIGHT))
 	{
@@ -1116,6 +1127,7 @@ void DrawRungs()
 		}
 		DrawRungPartition( ScanY + InfosGene->BlockHeight*RUNG_HEIGHT -5 );
 	}
+	TextZoomPercent = 100;
 }
 
 void DrawCurrentSection( void )
