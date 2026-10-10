@@ -37,6 +37,8 @@
 static GtkWidget *EditorButtonOk,*EditorButtonCancel;
 static GtkWidget *EditorButtonAdd,*EditorButtonIns,*EditorButtonDel;
 static GtkWidget *EditorButtonModify;
+static GtkWidget *EditorButtonUndo = NULL;
+extern GtkWidget *RungWindow;
 
 #define NBR_ELE_IN_TOOLBAR 50
 #define NBR_ELE_TOOLBAR_Y_MAX 15 // used for each GtkTable
@@ -111,6 +113,9 @@ void ButtonsForStart()
 	gtk_widget_hide (EditorButtonModify);
 	gtk_widget_show (EditorButtonOk);
 	gtk_widget_show (EditorButtonCancel);
+	if ( iCurrentLanguage==SECTION_IN_LADDER )
+		gtk_widget_show (EditorButtonUndo);
+	UpdateUndoButton( );
 	ShowPropertiesWindow( TRUE );
 	ShowEditModeInMainWindow( TRUE );
 	// select directly the pointer in toolbar per default...
@@ -148,6 +153,7 @@ void ButtonsForEnd( char ForRung )
 	gtk_widget_show (EditorButtonModify);
 	gtk_widget_hide (EditorButtonOk);
 	gtk_widget_hide (EditorButtonCancel);
+	gtk_widget_hide (EditorButtonUndo);
 	ShowPropertiesWindow( FALSE );
 	ShowEditModeInMainWindow( FALSE );
 	ShowLadderStateInStatusBar( );
@@ -204,7 +210,17 @@ void ButtonModifyCurrentRung()
 	}
 #endif
 }
-void ButtonOkCurrentRung()
+void UpdateUndoButton( void )
+{
+	if ( EditorButtonUndo!=NULL )
+		gtk_widget_set_sensitive( EditorButtonUndo, IsUndoAvailable( ) );
+}
+void ButtonUndo( void )
+{
+	UndoLastChangeInRung( );
+	UpdateUndoButton( );
+}
+static void DoOkCurrentRung( void )
 {
 	int iCurrentLanguage = SectionArray[ InfosGene->CurrentSection ].Language;
 	if ( iCurrentLanguage==SECTION_IN_LADDER )
@@ -214,6 +230,43 @@ void ButtonOkCurrentRung()
 		ApplySeqPageEdited();
 #endif
 	ButtonsForEnd( iCurrentLanguage==SECTION_IN_LADDER );
+}
+static void OkConfirmResponse( GtkDialog * Dlg, gint Response, gpointer data )
+{
+	gtk_widget_destroy( GTK_WIDGET(Dlg) );
+	if ( Response==GTK_RESPONSE_OK && EditDatas.ModeEdit )
+		DoOkCurrentRung( );
+}
+// before applying, warn about an unfinished rung, and ask when the change goes live in the running program
+void ButtonOkCurrentRung()
+{
+	int iCurrentLanguage = SectionArray[ InfosGene->CurrentSection ].Language;
+	char Problems[ 800 ];
+	char Secondary[ 1000 ];
+	int NbrProblems = 0;
+	char Running = ( InfosGene->LadderState==STATE_RUN );
+	GtkWidget * Dlg;
+	Problems[ 0 ] = '\0';
+	if ( iCurrentLanguage==SECTION_IN_LADDER )
+		NbrProblems = CheckRungEdited( Problems, sizeof(Problems) );
+	if ( NbrProblems==0 && !Running )
+	{
+		DoOkCurrentRung( );
+		return;
+	}
+	Dlg = gtk_message_dialog_new( GTK_WINDOW(RungWindow), GTK_DIALOG_MODAL,
+		NbrProblems>0?GTK_MESSAGE_WARNING:GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, "%s",
+		NbrProblems>0?_("This rung looks unfinished. Apply it anyway?"):_("Apply the changes to the running program?") );
+	snprintf( Secondary, sizeof(Secondary), "%s%s%s", Problems, (NbrProblems>0 && Running)?"\n":"",
+		Running?_("The program is running: the change takes effect as soon as it is applied."):"" );
+	gtk_message_dialog_format_secondary_text( GTK_MESSAGE_DIALOG(Dlg), "%s", Secondary );
+	gtk_dialog_add_buttons( GTK_DIALOG(Dlg),
+		_("_Keep editing"), GTK_RESPONSE_CANCEL,
+		GTK_STOCK_APPLY, GTK_RESPONSE_OK, NULL );
+	gtk_dialog_set_default_response( GTK_DIALOG(Dlg), NbrProblems>0?GTK_RESPONSE_CANCEL:GTK_RESPONSE_OK );
+	gtk_window_set_title( GTK_WINDOW(Dlg), _("Apply") );
+	g_signal_connect( Dlg, "response", G_CALLBACK(OkConfirmResponse), NULL );
+	gtk_widget_show_all( Dlg );
 }
 void ButtonCancelCurrentRung()
 {
@@ -342,7 +395,7 @@ void EditorInitGtk()
 	gtk_widget_show (vbox);
 
 	// buttons on two columns, to keep the editor compact
-	ButtonsTable = gtk_table_new( 3, 2, FALSE/*homogeneous*/ );
+	ButtonsTable = gtk_table_new( 4, 2, FALSE/*homogeneous*/ );
 	gtk_box_pack_start( GTK_BOX(vbox), ButtonsTable, FALSE, FALSE, 0 );
 	gtk_widget_show( ButtonsTable );
 
@@ -374,6 +427,10 @@ void EditorInitGtk()
 	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonCancel, 1, 2, 2, 3, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
 	gtk_signal_connect(GTK_OBJECT (EditorButtonCancel), "clicked",
 						(GtkSignalFunc) ButtonCancelCurrentRung, 0);
+	EditorButtonUndo = gtk_button_new_with_label (_("Undo last change"));
+	gtk_table_attach( GTK_TABLE(ButtonsTable), EditorButtonUndo, 0, 2, 3, 4, GTK_FILL|GTK_EXPAND, GTK_FILL, 0, 0 );
+	gtk_signal_connect(GTK_OBJECT (EditorButtonUndo), "clicked",
+						(GtkSignalFunc) ButtonUndo, 0);
 
 	InitAllForToolbar( );
 	TheTooltips = gtk_tooltips_new();

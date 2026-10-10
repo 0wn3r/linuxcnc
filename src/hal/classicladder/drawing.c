@@ -351,17 +351,22 @@ void DrawElement(GdkPixmap * DrawPixmap,int x,int y,int Width,int Height,StrElem
 	/* Drawing ^ or \/  */
 	switch(Element.Type)
 	{
+		/* drawn as an up or down arrow, to not look like the N.C. contact */
 		case ELE_RISING_INPUT:
 				gdk_draw_line(DrawPixmap, TheGc,
-								x+WidDiv3,y+HeiDiv3*2, x+WidDiv4*2,y+HeiDiv3);
+								x+WidDiv4*2,y+Height-HeiDiv4, x+WidDiv4*2,y+HeiDiv4);
 				gdk_draw_line(DrawPixmap, TheGc,
-								x+WidDiv4*2,y+HeiDiv3, x+WidDiv3*2,y+HeiDiv3*2);
+								x+WidDiv4*2-Width/12,y+HeiDiv4+Height/6, x+WidDiv4*2,y+HeiDiv4);
+				gdk_draw_line(DrawPixmap, TheGc,
+								x+WidDiv4*2+Width/12,y+HeiDiv4+Height/6, x+WidDiv4*2,y+HeiDiv4);
 				break;
 		case ELE_FALLING_INPUT:
 				gdk_draw_line(DrawPixmap, TheGc,
-								x+WidDiv3,y+HeiDiv3, x+WidDiv4*2,y+HeiDiv3*2);
+								x+WidDiv4*2,y+HeiDiv4, x+WidDiv4*2,y+Height-HeiDiv4);
 				gdk_draw_line(DrawPixmap, TheGc,
-								x+WidDiv4*2,y+HeiDiv3*2, x+WidDiv3*2,y+HeiDiv3);
+								x+WidDiv4*2-Width/12,y+Height-HeiDiv4-Height/6, x+WidDiv4*2,y+Height-HeiDiv4);
+				gdk_draw_line(DrawPixmap, TheGc,
+								x+WidDiv4*2+Width/12,y+Height-HeiDiv4-Height/6, x+WidDiv4*2,y+Height-HeiDiv4);
 				break;
 	}
 
@@ -1011,11 +1016,14 @@ void DrawCurrentElementEdited( int AddPosiY )
 	}
 }
 
+// zoom of the ladder view (100 = rungs fit the width of the window)
+int LadderZoomPercent = 100;
+
 void GetTheSizesForRung()
 {
 	static int PageHeightBak = 0;
 	static int BlockHeightBak = 0;
-	InfosGene->BlockWidth = (GTK_WIDGET(drawing_area)->allocation.width - OFFSET_X -5) / RUNG_WIDTH;
+	InfosGene->BlockWidth = (GTK_WIDGET(drawing_area)->allocation.width - OFFSET_X -5) / RUNG_WIDTH * LadderZoomPercent / 100;
 	// keep ratio aspect (if defaults values of size block not square)
 	InfosGene->BlockHeight = InfosGene->BlockWidth*BLOCK_HEIGHT_DEF/BLOCK_WIDTH_DEF;
 

@@ -23,6 +23,9 @@ void DrawTextGTK2( GdkPixmap * DrawPixmap, GdkGC * GcRef, int BaseX, int BaseY, 
 void DrawCommonElementForToolbar(GdkPixmap * DrawPixmap,int x,int y,int Size,int NumElement);
 void DrawElement(GdkPixmap * DrawPixmap,int x,int y,int Width,int Height,StrElement Element,char DrawingOption);
 void GetTheSizesForRung();
+extern int LadderZoomPercent;
+#define LADDER_ZOOM_MIN 50
+#define LADDER_ZOOM_MAX 300
 void DrawRung(GdkPixmap * DrawPixmap, StrRung * Rung, int PosiY, int BlockWidth, int BlockHeight, char DrawingOption);
 void DrawRungs();
 void DrawCurrentSection( void );

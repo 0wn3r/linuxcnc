@@ -169,6 +169,7 @@ gint BoolVarsWindowDeleteEvent( GtkWidget * widget, GdkEvent * event, gpointer d
 void BoolVarsWindowInitGtk()
 {
 	GtkWidget *vboxboolvars[ NBR_TYPE_BOOLS_SPY ],*vboxmain,*hboxvars;
+	GtkWidget *hboxoffset,*labeloffset;
 	long NumCheckWidget,ColumnVar;
 	GtkTooltips * WidgetTooltips[ NBR_TYPE_BOOLS_SPY ];
 	
@@ -196,7 +197,15 @@ void BoolVarsWindowInitGtk()
 		WidgetTooltips[ ColumnVar ] = gtk_tooltips_new();
 		gtk_tooltips_set_tip ( WidgetTooltips[ ColumnVar ], offsetboolvar[ ColumnVar ], _("Offset for vars displayed below (return to apply)"), NULL );
 		gtk_widget_set_usize((GtkWidget *)offsetboolvar[ ColumnVar ],40,0);
-		gtk_box_pack_start (GTK_BOX(vboxboolvars[ ColumnVar ]),  offsetboolvar[ ColumnVar ] , FALSE, FALSE, 0);
+		// say which variables the column shows, from the offset entered
+		hboxoffset = gtk_hbox_new( FALSE, 0 );
+		gtk_box_pack_start( GTK_BOX(vboxboolvars[ ColumnVar ]), hboxoffset, FALSE, FALSE, 0 );
+		gtk_widget_show( hboxoffset );
+		/* xgettext:no-c-format */
+		labeloffset = gtk_label_new( ColumnVar==0?_("%B from"):(ColumnVar==1?_("%I from"):_("%Q from")) );
+		gtk_box_pack_start( GTK_BOX(hboxoffset), labeloffset, FALSE, FALSE, 2 );
+		gtk_widget_show( labeloffset );
+		gtk_box_pack_start (GTK_BOX(hboxoffset),  offsetboolvar[ ColumnVar ] , FALSE, FALSE, 0);
 		gtk_widget_show( offsetboolvar[ ColumnVar ] );
 		gtk_entry_set_text((GtkEntry *)offsetboolvar[ ColumnVar ],"0");
 		gtk_signal_connect(GTK_OBJECT (offsetboolvar[ ColumnVar ]), "activate",
