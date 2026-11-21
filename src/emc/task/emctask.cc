@@ -223,8 +223,20 @@ int emcTaskStateRestore()
     return res;
 }
 
+// Set by emcTaskAbort() when it stops a running program, consumed by
+// emcAbortCleanup() to tell the operator why the program ended.
+static int abort_report_pending = 0;
+static int abort_report_line = 0;
+const char *emcTaskAbortDetail = NULL;
+
 int emcTaskAbort()
 {
+    abort_report_pending =
+        emcStatus->task.mode == EMC_TASK_MODE_AUTO &&
+        emcStatus->task.interpState != EMC_TASK_INTERP_IDLE;
+    abort_report_line = emcStatus->task.motionLine > 0 ?
+        emcStatus->task.motionLine : emcStatus->task.currentLine;
+
     emcMotionAbort();
 
     // clear out the pending command
@@ -741,8 +753,56 @@ int emcTaskUpdate(EMC_TASK_STAT * stat)
     return 0;
 }
 
+static void report_program_abort(int reason)
+{
+    int line = abort_report_line;
+    const char *detail = emcTaskAbortDetail;
+
+    switch (reason) {
+    case EMC_ABORT_TASK_EXEC_ERROR:
+        emcOperatorError(0, "Program aborted at line %d: %s", line,
+                         detail ? detail : "a queued command failed to execute");
+        break;
+    case EMC_ABORT_AUX_ESTOP:
+        emcOperatorError(0, "Program aborted at line %d: external E-stop "
+                         "(iocontrol.0.emc-enable-in went FALSE)", line);
+        break;
+    case EMC_ABORT_MOTION_OR_IO_RCS_ERROR:
+        emcOperatorError(0, "Program aborted at line %d: %s", line,
+                         detail ? detail : "motion or IO controller error");
+        break;
+    case EMC_ABORT_TASK_STATE_NOT_ON:
+        emcOperatorError(0, "Program aborted at line %d: machine is no longer ON "
+                         "(motion was disabled, e.g. by motion.enable, a joint or "
+                         "spindle amplifier fault)", line);
+        break;
+    case EMC_ABORT_TASK_STATE_OFF:
+        emcOperatorText(0, "Program aborted at line %d: machine turned off", line);
+        break;
+    case EMC_ABORT_TASK_STATE_ESTOP:
+        emcOperatorText(0, "Program aborted at line %d: E-stop requested", line);
+        break;
+    case EMC_ABORT_TASK_STATE_ESTOP_RESET:
+        emcOperatorText(0, "Program aborted at line %d: E-stop reset requested", line);
+        break;
+    case EMC_ABORT_TASK_ABORT:
+        emcOperatorText(0, "Program aborted at line %d: abort requested by a user "
+                        "interface or halui", line);
+        break;
+    default:
+        // interpreter errors are reported by the interpreter itself
+        break;
+    }
+}
+
 int emcAbortCleanup(int reason, const char *message)
 {
+    if (abort_report_pending) {
+        report_program_abort(reason);
+    }
+    abort_report_pending = 0;
+    emcTaskAbortDetail = NULL;
+
     int status = interp.on_abort(reason,message);
     if (status > INTERP_MIN_ERROR)
 	print_interp_error(status);

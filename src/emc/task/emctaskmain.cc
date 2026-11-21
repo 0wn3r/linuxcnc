@@ -2124,7 +2124,14 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
 
     case EMC_TASK_SET_MODE_TYPE:
 	mode_msg = (EMC_TASK_SET_MODE *) cmd;
-	if (emcStatus->task.mode == EMC_TASK_MODE_AUTO &&
+	if (mode_msg->mode == emcStatus->task.mode &&
+	    emcStatus->task.interpState != EMC_TASK_INTERP_IDLE) {
+	    // Already in the requested mode with a program or MDI command
+	    // running.  Re-entering the mode would abort it (emcTaskSetMode()
+	    // calls emcTaskAbort()), silently stopping the program, so
+	    // treat it as a no-op.
+	    retval = 0;
+	} else if (emcStatus->task.mode == EMC_TASK_MODE_AUTO &&
 	    emcStatus->task.interpState != EMC_TASK_INTERP_IDLE &&
 	    mode_msg->mode != EMC_TASK_MODE_AUTO) {
 	    emcOperatorError(0, _("Can't switch mode while mode is AUTO and interpreter is not IDLE"));
@@ -2629,6 +2636,10 @@ static int emcTaskExecute(void)
 	    } else {
 		// have an outstanding command
 		if (0 != emcTaskIssueCommand(emcTaskCommand)) {
+		    static char detail[LINELEN];
+		    snprintf(detail, sizeof(detail), "command %s failed to execute",
+			     emc_symbol_lookup(emcTaskCommand->type));
+		    emcTaskAbortDetail = detail;
 		    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 		    retval = -1;
 		} else {
@@ -2659,6 +2670,7 @@ static int emcTaskExecute(void)
 	STEPPING_CHECK();
 	if (emcStatus->motion.status == RCS_ERROR) {
 	    // emcOperatorError(0, "error in motion controller");
+	    emcTaskAbortDetail = "motion controller reported an error";
 	    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	} else if (emcStatus->motion.status == RCS_DONE) {
 	    emcStatus->task.execState = EMC_TASK_EXEC_DONE;
@@ -2670,6 +2682,7 @@ static int emcTaskExecute(void)
 	STEPPING_CHECK();
 	if (emcStatus->io.status == RCS_ERROR) {
 	    // emcOperatorError(0, "error in IO controller");
+	    emcTaskAbortDetail = "IO controller reported an error";
 	    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	} else if (emcStatus->io.status == RCS_DONE) {
 	    emcStatus->task.execState = EMC_TASK_EXEC_DONE;
@@ -2681,9 +2694,11 @@ static int emcTaskExecute(void)
 	STEPPING_CHECK();
 	if (emcStatus->motion.status == RCS_ERROR) {
 	    // emcOperatorError(0, "error in motion controller");
+	    emcTaskAbortDetail = "motion controller reported an error";
 	    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	} else if (emcStatus->io.status == RCS_ERROR) {
 	    // emcOperatorError(0, "error in IO controller");
+	    emcTaskAbortDetail = "IO controller reported an error";
 	    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	} else if (emcStatus->motion.status == RCS_DONE &&
 		   emcStatus->io.status == RCS_DONE) {
@@ -2842,6 +2857,13 @@ static int emcTaskExecute(void)
 			("emcSystemCmd: system command %d exited abnormally with value %d\n",
 			 emcSystemCmdPid, WEXITSTATUS(status));
 		}
+		{
+		    static char detail[LINELEN];
+		    snprintf(detail, sizeof(detail),
+			     "user M-code / system command exited with status %d",
+			     WEXITSTATUS(status));
+		    emcTaskAbortDetail = detail;
+		}
 		emcSystemCmdPid = 0;
 		emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	    }
@@ -2851,6 +2873,7 @@ static int emcTaskExecute(void)
 		rcs_print("system command %d terminated with signal %d\n",
 			  emcSystemCmdPid, WTERMSIG(status));
 	    }
+	    emcTaskAbortDetail = "user M-code / system command was killed by a signal";
 	    emcSystemCmdPid = 0;
 	    emcStatus->task.execState = EMC_TASK_EXEC_ERROR;
 	} else if (WIFSTOPPED(status)) {
@@ -3497,6 +3520,9 @@ int main(int argc, char *argv[])
 
             // abort everything
             emcTaskAbort();
+            emcTaskAbortDetail = emcStatus->motion.status == RCS_ERROR ?
+                "motion controller reported an error" :
+                "IO controller reported an error (e.g. tool change aborted)";
             emcIoAbort(EMC_ABORT_MOTION_OR_IO_RCS_ERROR);
         for (int s = 0; s < emcStatus->motion.traj.spindles; s++) emcSpindleAbort(s);;
 	    mdi_execute_abort();

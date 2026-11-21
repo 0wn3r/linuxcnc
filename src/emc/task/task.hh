@@ -33,6 +33,8 @@ int emcTaskInit();
 int emcTaskHalt();
 int emcTaskStateRestore();
 int emcTaskAbort();
+// why the next abort happens, reported by emcAbortCleanup(); may be NULL
+extern const char *emcTaskAbortDetail;
 int emcTaskSetMode(int mode);
 int emcTaskSetState(int state);
 int emcTaskPlanInit();
