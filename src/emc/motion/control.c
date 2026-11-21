@@ -188,6 +188,13 @@ static void output_to_hal(void);
 */
 static void update_status(void);
 
+/* 'check_spindle_wait()' reports, once, when the trajectory planner has
+   held a coordinated move for the spindle for longer than
+   SPINDLE_WAIT_REPORT_SECS.  Without it a program that waits forever for
+   spindle.N.at-speed, the spindle index, or spindle.N.speed-in (feed per
+   rev) just stops with no message. */
+static void check_spindle_wait(void);
+
 static void handle_kinematicsSwitch(void);
 
 /***********************************************************************
@@ -264,6 +271,7 @@ void emcmotController(void *arg, long period)
     }
 
     get_pos_cmds(period);
+    check_spindle_wait();
     compute_screw_comp();
     *(emcmot_hal_data->eoffset_active) = axis_plan_external_offsets(servo_period, GET_MOTION_ENABLE_FLAG(), get_allhomed());
     output_to_hal();
@@ -1656,6 +1664,61 @@ Their exact contents and meaning are as follows:
    actualPos would _never_ get updated.
 
 */
+
+#define SPINDLE_WAIT_REPORT_SECS 5.0
+
+static void check_spindle_wait(void)
+{
+    static int last_reason = EMCMOT_SPINDLE_WAIT_NONE;
+    static int last_id = 0;
+    static int reported = 0;
+    static double waited = 0.0;
+    int reason = emcmotStatus->spindle_wait;
+    int id = emcmotStatus->spindle_wait_id;
+    int s = emcmotStatus->spindle_wait_num;
+    double cmd, fb;
+
+    if (!GET_MOTION_COORD_FLAG() || reason == EMCMOT_SPINDLE_WAIT_NONE) {
+        last_reason = EMCMOT_SPINDLE_WAIT_NONE;
+        waited = 0.0;
+        reported = 0;
+        return;
+    }
+    if (reason != last_reason || id != last_id) {
+        last_reason = reason;
+        last_id = id;
+        waited = 0.0;
+        reported = 0;
+    }
+    waited += servo_period;
+    if (reported || waited < SPINDLE_WAIT_REPORT_SECS) {
+        return;
+    }
+    reported = 1;
+
+    if (s < 0 || s >= emcmotConfig->numSpindles) {
+        s = 0;
+    }
+    cmd = *(emcmot_hal_data->spindle[s].spindle_speed_out);
+    fb = *(emcmot_hal_data->spindle[s].spindle_speed_in) * 60.0;
+    switch (reason) {
+    case EMCMOT_SPINDLE_WAIT_AT_SPEED:
+        reportError(_("Line %d: motion has waited %.0f s for spindle.%d.at-speed, which is still FALSE "
+                      "(speed-out %.0f rpm, speed-in %.0f rpm). The program will not continue until it goes TRUE."),
+                    id, waited, s, cmd, fb);
+        break;
+    case EMCMOT_SPINDLE_WAIT_INDEX:
+        reportError(_("Line %d: motion has waited %.0f s for the spindle %d index pulse "
+                      "(spindle.%d.index-enable was never cleared). Check the spindle encoder."),
+                    id, waited, s, s);
+        break;
+    case EMCMOT_SPINDLE_WAIT_SPEED_IN:
+        reportError(_("Line %d: feed-per-revolution (G95) move has not advanced for %.0f s because "
+                      "spindle.%d.speed-in is 0 (speed-out %.0f rpm). Feed per rev needs spindle speed feedback."),
+                    id, waited, s, cmd);
+        break;
+    }
+}
 
 static void compute_screw_comp(void)
 {

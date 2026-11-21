@@ -417,6 +417,15 @@ Suggestion: Split this in to an Error and a Status flag register..
 	EMCMOT_ORIENT_FAULTED,
     } orient_state_t;
 
+    /* reasons the trajectory planner can hold a move for the spindle,
+       reported in emcmotStatus->spindle_wait */
+    typedef enum {
+	EMCMOT_SPINDLE_WAIT_NONE = 0,
+	EMCMOT_SPINDLE_WAIT_AT_SPEED,   /* spindle.N.at-speed is false */
+	EMCMOT_SPINDLE_WAIT_INDEX,      /* spindle.N.index-enable not cleared */
+	EMCMOT_SPINDLE_WAIT_SPEED_IN,   /* feed per rev, spindle.N.speed-in is 0 */
+    } spindle_wait_t;
+
 /* flags for enabling spindle scaling, feed scaling,
    adaptive feed, and feed hold */
 
@@ -597,6 +606,10 @@ Suggestion: Split this in to an Error and a Status flag register..
 	emcmot_joint_status_t joint_status[EMCMOT_MAX_JOINTS];	/* all joint status data */
     emcmot_axis_status_t axis_status[EMCMOT_MAX_AXIS];	/* all axis status data */
     int spindleSync;    /* spindle used for synchronised moves. -1 = none */
+    int spindle_wait;    /* why the TP is holding the current move for the
+                            spindle (EMCMOT_SPINDLE_WAIT_*), 0 = not waiting */
+    int spindle_wait_id; /* motion id (line) of the move being held */
+    int spindle_wait_num; /* spindle number involved, -1 if unknown */
     spindle_status_t spindle_status[EMCMOT_MAX_SPINDLES]; /* all spindle data */
 
 

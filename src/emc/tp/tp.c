@@ -2795,6 +2795,13 @@ STATIC tp_err_t tpHandleAbort(TP_STRUCT * const tp, TC_STRUCT * const tc,
  * has not reached the requested speed, or the spindle index has not been
  * detected.
  */
+STATIC void tpSetSpindleWait(int reason, int id, int spindle_num)
+{
+    emcmotStatus->spindle_wait = reason;
+    emcmotStatus->spindle_wait_id = id;
+    emcmotStatus->spindle_wait_num = spindle_num;
+}
+
 STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
 {
 	int s;
@@ -2820,6 +2827,7 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
         for (s = 0; s < emcmotConfig->numSpindles; s++){
             if(!emcmotStatus->spindle_status[s].at_speed) {
                 // spindle is still not at the right speed, so wait another cycle
+                tpSetSpindleWait(EMCMOT_SPINDLE_WAIT_AT_SPEED, tc->id, s);
                 return TP_ERR_WAITING;
             }
         }
@@ -2830,6 +2838,7 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
     if (MOTION_ID_VALID(tp->spindle.waiting_for_index)) {
         if (emcmotStatus->spindle_status[tp->spindle.spindle_num].spindle_index_enable) {
             /* haven't passed index yet */
+            tpSetSpindleWait(EMCMOT_SPINDLE_WAIT_INDEX, tc->id, tp->spindle.spindle_num);
             return TP_ERR_WAITING;
         } else {
             rtapi_print_msg(RTAPI_MSG_DBG, "Index seen on spindle %d\n", tp->spindle.spindle_num);
@@ -2896,6 +2905,7 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
         for (s = 0; s < emcmotConfig->numSpindles; s++){
             if (!emcmotStatus->spindle_status[s].at_speed) {
                 tp->spindle.waiting_for_atspeed = tc->id;
+                tpSetSpindleWait(EMCMOT_SPINDLE_WAIT_AT_SPEED, tc->id, s);
                 return TP_ERR_WAITING;
             }
         }
@@ -2950,6 +2960,10 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
 STATIC void tpSyncVelocityMode(TP_STRUCT * const tp, TC_STRUCT * const tc, TC_STRUCT * const nexttc) {
     double speed = emcmotStatus->spindle_status[tp->spindle.spindle_num].spindleSpeedIn;
     double pos_error = fabs(speed) * tc->uu_per_rev;
+    if (speed == 0.0) {
+        // feed per rev with no spindle speed feedback: the move cannot advance
+        tpSetSpindleWait(EMCMOT_SPINDLE_WAIT_SPEED_IN, tc->id, tp->spindle.spindle_num);
+    }
     // Account for movement due to parabolic blending with next segment
     if(nexttc) {
         pos_error -= nexttc->progress;
@@ -3135,6 +3149,8 @@ STATIC int tpUpdateInitialStatus(TP_STRUCT const * const tp) {
     emcmotStatus->requested_vel = 0.0;
     //FIXME test if we can do this safely
     emcmotStatus->current_vel = 0.0;
+    // Cleared every cycle, set again below if a move is held for the spindle
+    emcmotStatus->spindle_wait = EMCMOT_SPINDLE_WAIT_NONE;
     return TP_ERR_OK;
 }
 
