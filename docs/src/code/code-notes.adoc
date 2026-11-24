@@ -127,7 +127,7 @@ of the HAL, and uses terms like HAL pins, HAL signals, etc, without
 explaining them. For more information about the HAL, see the
 HAL Manual. Another chapter of this document will
 eventually go into the internals of the HAL itself, but in this
-chapter, we only use the HAL API as defined in src/hal/hal.h.
+chapter, we only use the HAL API as defined in include/hal.h.
 
 === Motion Controller Modules
 
@@ -1161,7 +1161,8 @@ Handled by +Interp::convert_tool_select()+.
 . Back in interp, +settings->selected_pocket+ is assigned the tooldata index of the requested tool _xxx_.
 
 [NOTE]
-The legacy names *selected_pocket* and *current_pocket* actually reference a sequential tooldata index for tool items loaded from a tool table ([EMCIO]TOOL_TABLE) or via a tooldata database ([EMCIO]DB_PROGRAM).
+The legacy names +settings->selected_pocket+ and +settings->current_pocket+ actually reference a sequential tooldata index for tool items loaded from a tool table ([EMCIO]TOOL_TABLE) or via a tooldata database ([EMCIO]DB_PROGRAM).
+Python remaps (+self.selected_pocket+, +self.current_pocket+) and the named parameters +#<_selected_pocket>+ and +#<_current_pocket>+ show them as the pocket numbers from the tool table instead; see +Interp::pocket_number()+ and +Interp::pocket_index()+.
 
 ==== M6
 
@@ -1234,7 +1235,7 @@ Set current tool number.  This switches LinuxCNC's internal representation of wh
 
 Handled by +Interp::convert_tool_change()+.
 
-Canon: +CHANGE_TOOL_NUMBER()+
+Canon: +CHANGE_TOOL_NUMBER()+, with the tool number from the Q-word. Task looks up the tool's tooldata index and loads it.
 
 settings->current_pocket is assigned the tooldata index currently holding the tool specified by the Q-word argument.
 
@@ -1312,8 +1313,7 @@ settings.tool_offset::
 +
 * Used to compute position in various places.
 * Sent to Motion via the +EMCMOT_SET_OFFSET+ message.
-  All motion does with the offsets is export them to the HAL pins +motion.0.tooloffset.[xyzabcuvw]+.
-  FIXME: export these from someplace closer to the tool table (io or interp, probably) and remove the EMCMOT_SET_OFFSET message.
+  Motion exports the offsets to the HAL pins +motion.0.tooloffset.[xyzabcuvw]+ and hands them to the kinematics module through +kinematicsSetTool()+, for a module whose maths needs the tool length.
 
 settings.pockets_max::
   Used interchangeably with +CANON_POCKETS_MAX+ (a #defined constant, set to 1000 as of April 2020).

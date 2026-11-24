@@ -33,6 +33,11 @@ if [[ ! -v LINUXCNC_OPENGL_PLATFORM || "${LINUXCNC_OPENGL_PLATFORM}" == "glx" ]]
     export QT_QPA_PLATFORM="xcb"
 fi
 
+# An OpenMP build of OpenBLAS reserves about 1 GiB per CPU when numpy
+# is imported; with less RAM than that the kernel refuses to fork the
+# GUI (ENOMEM). Nothing here needs threaded BLAS.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+
 ################################################################################
 # 0. Values that come from configure
 ################################################################################
@@ -347,12 +352,13 @@ if [ -z "$INIFILE" ] ; then
     # nothing specified, get from the user
     # it returns either a path, or nothing at all
     INIFILE=$($PICKCONFIG)
-    # if name is xxxx.demo, then:
-    #    execute xxxx.demo in background and exit
-    if [ "${INIFILE%%.demo}".demo = "${INIFILE}" ] ; then
-      "${INIFILE}" &
-      exit 0
-    fi
+fi
+
+# if name is xxxx.demo (picked now, or picked last time and reused with -l),
+# then execute xxxx.demo in background and exit
+if [ "${INIFILE%%.demo}".demo = "${INIFILE}" ] ; then
+  "${INIFILE}" &
+  exit 0
 fi
 
 if [ -z "$INIFILE" ] ; then
@@ -418,7 +424,13 @@ fi
 # Running inivalue without section/variable filter should return the value of
 # the first variable in the first section of the file. If that fails, there is
 # a parse error in the file or it is empty.
-inivalue "$INIFILE" > /dev/null || { echo "E: The INI-file contains errors that need to be fixed."; exit 1; }
+if ! inivalue "$INIFILE" > /dev/null; then
+    # Older configs may use dashed identifiers (e.g. the xhc-hb04 pendant
+    # button names), which the ini parser no longer accepts. Try to rewrite
+    # them with underscores and test again.
+    update_ini --fix-identifiers "$INIFILE" || { echo "E: update_ini: automatic update failed. Please update your INI-file manually."; exit 1; }
+    inivalue "$INIFILE" > /dev/null || { echo "E: The INI-file contains errors that need to be fixed."; exit 1; }
+fi
 
 # delete directories from path, save name only
 INI_NAME="${INIFILE##*/}"
@@ -689,8 +701,9 @@ function Cleanup() {
     # Unused variable 'i', just a counter
     # shellcheck disable=SC2034
     for i in $(seq 10); do
-        # (the one component is the halcmd itself)
-        if [ "$($HALCMD list comp | wc -w)" = 1 ]; then break; fi
+        # (the one component is the halcmd itself; a thread is listed as
+        # a __<name> pseudo component, which stays until realtime stops)
+        if [ "$($HALCMD list comp | tr -s ' ' '\n' | grep -c -v -e '^__' -e '^$')" = 1 ]; then break; fi
         sleep .2
     done
 

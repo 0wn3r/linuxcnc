@@ -18,22 +18,23 @@
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #define PY_SSIZE_T_CLEAN
+#include <Python.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <Python.h>
 #include <structseq.h>
 #include <pthread.h>
 #include <structmember.h>
 #include "config.h"
-#include "libnml/rcs/rcs.hh"
-#include "nml_intf/emc.hh"
-#include "nml_intf/emc_nml.hh"
-#include "nml_intf/debugflags.h"
+#include <rcs_status.hh>
+#include <nml_intf/emc.hh>
+#include <nml_intf/emc_nml.hh>
+#include <nml_intf/debugflags.h>
 #include <kinematics.h>
 #include "config.h"
 #include <inifile.hh>
-#include "libnml/os_intf/timer.hh"
-#include "libnml/nml/nml_oi.hh"
+#include "timeutil.hh"
+#include <libnml/nml/nml_oi.hh>
+#include <libnml/cms/cms.hh>
 #include "libnml/rcs/rcs_print.hh"
 #include <sys/types.h>
 #include <unistd.h>
@@ -1006,13 +1007,19 @@ static PyObject *poll(pyStatChannel *s, PyObject * /*o*/) {
       initialized=1;
     }
 #else //}{
-    static bool mmap_available = 1;
-    if (!mmap_available) return NULL;
+    // task creates the mmap file; a GUI may poll before that, so retry
+    // the attach on every poll until it succeeds. Until then
+    // initialized stays 0 and the tool accessors report no data.
+    static bool warned = 0;
     if (!initialized) {
-        initialized=1;
-        if (tool_mmap_user()) {
-          mmap_available = 0;
-          fprintf(stderr,"poll(): continuing without tool mmap data\n");
+        if (tool_mmap_user() == 0) {
+            initialized=1;
+            if (warned) {
+                fprintf(stderr,"poll(): tool mmap available now\n");
+            }
+        } else if (!warned) {
+            warned = 1;
+            fprintf(stderr,"poll(): tool mmap not available yet, retrying\n");
         }
     }
 #endif //}
@@ -1072,7 +1079,7 @@ static PyObject *toolinfo(pyStatChannel * /*s*/, PyObject *o) {
     **     linuxcnc.stat.tool_table[idx]
     */
     if (toolno == 0) {
-        PyErr_Format(PyExc_ValueError,"toolinfo: for tool in spindle: use linuxnc.stat.tool_table[0]");
+        PyErr_Format(PyExc_ValueError,"toolinfo: for tool in spindle: use linuxcnc.stat.loaded_tool");
         return NULL;
     }
 #endif
@@ -1151,6 +1158,7 @@ static PyMemberDef Stat_members[] = {
     { "task_paused", T_INT, O(task.task_paused), READONLY, NULL},
     { "input_timeout", T_BOOL, O(task.input_timeout), READONLY, NULL},
     { "rotation_xy", T_DOUBLE, O(task.rotation_xy), READONLY, NULL},
+    { "g68_active", T_INT, O(task.g68_active), READONLY, "A tilted work plane (G68.2) is in effect."},
     { "ini_filename", T_STRING_INPLACE, O(task.ini_filename), READONLY, NULL},
     { "delay_left", T_DOUBLE, O(task.delayLeft), READONLY, NULL},
     { "queued_mdi_commands", T_INT, O(task.queuedMDIcommands), READONLY,
@@ -1184,6 +1192,9 @@ static PyMemberDef Stat_members[] = {
     { "probing", T_BOOL, O(motion.traj.probing), READONLY, NULL},
     { "probe_val", T_INT, O(motion.traj.probeval), READONLY, NULL},
     { "kinematics_type", T_INT, O(motion.traj.kinematics_type), READONLY, NULL},
+    { "kins_type", T_INT, O(motion.traj.switchkins_type), READONLY,
+        "The kinematics type motion runs, as G12.1 selects it and motion.kins-type\n"
+        "reports it; 0 for a module that switches nothing." },
     { "motion_type", T_INT, O(motion.traj.motion_type), READONLY,
         "The type of the currently executing motion (one of MOTION_TYPE_TRAVERSE,\n"
         "MOTION_TYPE_FEED, MOTION_TYPE_ARC, MOTION_TYPE_TOOLCHANGE,\n"
@@ -1273,6 +1284,26 @@ static PyObject *Stat_g92_offset(pyStatChannel *s, void *) {
 
 static PyObject *Stat_tool_offset(pyStatChannel *s, void *) {
     return pose(s->status.task.toolOffset);
+}
+
+static PyObject *Stat_g68_offset(pyStatChannel *s, void *) {
+    return pose(s->status.task.g68_offset);
+}
+
+static PyObject *Stat_g68_rotation(pyStatChannel *s, void *) {
+    PyObject *res = PyTuple_New(9);
+    for (int i = 0; i < 9; i++) {
+        PyTuple_SET_ITEM(res, i, PyFloat_FromDouble(s->status.task.g68_rotation[i]));
+    }
+    return res;
+}
+
+static PyObject *Stat_kins_type_flags(pyStatChannel *s, void *) {
+    PyObject *res = PyTuple_New(SWITCHKINS_MAX_TYPES);
+    for (int i = 0; i < SWITCHKINS_MAX_TYPES; i++) {
+        PyTuple_SET_ITEM(res, i, PyLong_FromLong(s->status.motion.traj.switchkins_flags[i]));
+    }
+    return res;
 }
 
 static PyObject *Stat_position(pyStatChannel *s, void *) {
@@ -1463,6 +1494,7 @@ static PyStructSequence_Field tool_fields[] = {
     {(char*)"frontangle", NULL},
     {(char*)"backangle", NULL},
     {(char*)"orientation", NULL},
+    {(char*)"pocketno", NULL},
     {},
 };
 
@@ -1470,10 +1502,36 @@ static PyStructSequence_Desc tool_result_desc = {
     (char*)"tool_result", /* name */
     (char*)"", /* doc */
     tool_fields,
-    14
+    15
 };
 
 static PyTypeObject ToolResultType;
+
+static PyObject *tool_result(const CANON_TOOL_TABLE &t) {
+    PyObject *tool = PyStructSequence_New(&ToolResultType);
+    PyStructSequence_SET_ITEM(tool,  0, PyLong_FromLong(t.toolno));
+    PyStructSequence_SET_ITEM(tool,  1, PyFloat_FromDouble(t.offset.tran.x));
+    PyStructSequence_SET_ITEM(tool,  2, PyFloat_FromDouble(t.offset.tran.y));
+    PyStructSequence_SET_ITEM(tool,  3, PyFloat_FromDouble(t.offset.tran.z));
+    PyStructSequence_SET_ITEM(tool,  4, PyFloat_FromDouble(t.offset.a));
+    PyStructSequence_SET_ITEM(tool,  5, PyFloat_FromDouble(t.offset.b));
+    PyStructSequence_SET_ITEM(tool,  6, PyFloat_FromDouble(t.offset.c));
+    PyStructSequence_SET_ITEM(tool,  7, PyFloat_FromDouble(t.offset.u));
+    PyStructSequence_SET_ITEM(tool,  8, PyFloat_FromDouble(t.offset.v));
+    PyStructSequence_SET_ITEM(tool,  9, PyFloat_FromDouble(t.offset.w));
+    PyStructSequence_SET_ITEM(tool, 10, PyFloat_FromDouble(t.diameter));
+    PyStructSequence_SET_ITEM(tool, 11, PyFloat_FromDouble(t.frontangle));
+    PyStructSequence_SET_ITEM(tool, 12, PyFloat_FromDouble(t.backangle));
+    PyStructSequence_SET_ITEM(tool, 13, PyLong_FromLong(t.orientation));
+    PyStructSequence_SET_ITEM(tool, 14, PyLong_FromLong(t.pocketno));
+    return tool;
+}
+
+// The spindle's tool table entry, the loaded tool's data. It comes with the
+// status message, unlike tool_table.
+static PyObject *Stat_loaded_tool(pyStatChannel *s, void *) {
+    return tool_result(s->status.io.tool.toolTableCurrent);
+}
 
 static PyObject *Stat_tool_table(pyStatChannel * /*s*/, void *) {
     PyObject *res;
@@ -1492,22 +1550,7 @@ static PyObject *Stat_tool_table(pyStatChannel * /*s*/, void *) {
         if (tooldata_get(&tdata,idx) != IDX_OK) {
             fprintf(stderr,"UNEXPECTED idx %s %d\n",__FILE__,__LINE__);
         }
-        struct CANON_TOOL_TABLE &t = tdata;
-        PyObject *tool = PyStructSequence_New(&ToolResultType);
-        PyStructSequence_SET_ITEM(tool,  0, PyLong_FromLong(t.toolno));
-        PyStructSequence_SET_ITEM(tool,  1, PyFloat_FromDouble(t.offset.tran.x));
-        PyStructSequence_SET_ITEM(tool,  2, PyFloat_FromDouble(t.offset.tran.y));
-        PyStructSequence_SET_ITEM(tool,  3, PyFloat_FromDouble(t.offset.tran.z));
-        PyStructSequence_SET_ITEM(tool,  4, PyFloat_FromDouble(t.offset.a));
-        PyStructSequence_SET_ITEM(tool,  5, PyFloat_FromDouble(t.offset.b));
-        PyStructSequence_SET_ITEM(tool,  6, PyFloat_FromDouble(t.offset.c));
-        PyStructSequence_SET_ITEM(tool,  7, PyFloat_FromDouble(t.offset.u));
-        PyStructSequence_SET_ITEM(tool,  8, PyFloat_FromDouble(t.offset.v));
-        PyStructSequence_SET_ITEM(tool,  9, PyFloat_FromDouble(t.offset.w));
-        PyStructSequence_SET_ITEM(tool, 10, PyFloat_FromDouble(t.diameter));
-        PyStructSequence_SET_ITEM(tool, 11, PyFloat_FromDouble(t.frontangle));
-        PyStructSequence_SET_ITEM(tool, 12, PyFloat_FromDouble(t.backangle));
-        PyStructSequence_SET_ITEM(tool, 13, PyLong_FromLong(t.orientation));
+        PyObject *tool = tool_result(tdata);
         PyTuple_SetItem(res, j, tool);
         j++;
     }
@@ -1577,6 +1620,12 @@ static PyGetSetDef Stat_getsetlist[] = {
     {(char*)"g5x_offset", (getter)Stat_g5x_offset, NULL, NULL, NULL},
     {(char*)"g5x_index", (getter)Stat_g5x_index, NULL, NULL, NULL},
     {(char*)"g92_offset", (getter)Stat_g92_offset, NULL, NULL, NULL},
+    {(char*)"g68_offset", (getter)Stat_g68_offset, NULL,
+        (char*)"Origin of the tilted work plane (G68.2), in the coordinate system it was defined in.", NULL},
+    {(char*)"g68_rotation", (getter)Stat_g68_rotation, NULL,
+        (char*)"Rotation matrix of the tilted work plane (G68.2), nine values row by row.", NULL},
+    {(char*)"kins_type_flags", (getter)Stat_kins_type_flags, NULL,
+        (char*)"What the module declares each kinematics type to be, one entry per type: KINSTYPE_ flags, or -1 for a type it does not provide.", NULL},
     {(char*)"position", (getter)Stat_position, NULL, NULL, NULL},
     {(char*)"dtg", (getter)Stat_dtg, NULL, NULL, NULL},
     {(char*)"joint_position", (getter)Stat_joint_position, NULL, NULL, NULL},
@@ -1587,6 +1636,9 @@ static PyGetSetDef Stat_getsetlist[] = {
         "feed rate, spindle speed, and G64 blend and naive CAM tolerances.", NULL
     },
     {(char*)"tool_offset", (getter)Stat_tool_offset, NULL, NULL, NULL},
+    {(char*)"loaded_tool", (getter)Stat_loaded_tool, (setter)NULL,
+        (char*)"The tool table entry of the tool in the spindle, like an entry of tool_table.", NULL
+    },
     {(char*)"tool_table", (getter)Stat_tool_table, (setter)NULL,
         (char*)"The tooltable, expressed as a list of tools.  Each tool is a dict with the\n"
         "tool id (tool number), diameter, offsets, etc.", NULL
@@ -3399,6 +3451,10 @@ PyMODINIT_FUNC PyInit_linuxcnc(void)
     ENUM(KINEMATICS_FORWARD_ONLY);
     ENUM(KINEMATICS_INVERSE_ONLY);
     ENUM(KINEMATICS_BOTH);
+
+    ENUM(KINSTYPE_IDENTITY);
+    ENUM(KINSTYPE_PRIMARY);
+    ENUM(KINSTYPE_MACHINE);
 
     ENUMX(4, EMC_DEBUG_CONFIG);
     ENUMX(4, EMC_DEBUG_VERSIONS);

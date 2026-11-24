@@ -48,23 +48,34 @@
   The code from University of Palermo is modified to work on planes xy, yz and zx by Joachim Franek
   */
 
+#include "logutil.hh"
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
 #include <string.h>		// strncpy()
+#include <fstream>
+#include <iostream>
+#include <sstream>
 #include <ctype.h>		// isspace()
-#include "libnml/rcs/rcs_print.hh"
-#include "nml_intf/emc.hh"		// EMC NML
-#include "nml_intf/emc_nml.hh"
+#include <nml_intf/emc.hh>		// EMC NML
+#include <nml_intf/emc_nml.hh>
 #include <kinematics.h>		// SWITCHKINS_MAX_TYPES
-#include "nml_intf/canon.hh"
-#include "nml_intf/canon_position.hh"		// data type for a machine position
-#include "nml_intf/interpl.hh"		// interp_list
-#include "nml_intf/emcglb.h"		// TRAJ_MAX_VELOCITY
-#include "nml_intf/modal_state.hh"
+#include <nml_intf/canon.hh>
+#include "nml_intf/nurbs_math.hh"
+#include <nml_intf/canon_position.hh>		// data type for a machine position
+#include "nml_intf/interpl_nml.hh"		// interp_list
+#include <nml_intf/emcglb.h>		// TRAJ_MAX_VELOCITY
+#include <nml_intf/modal_state.hh>
 #include "tooldata/tooldata.hh"
 #include <axis_kinds.hh>
 #include <algorithm>
+#include <unistd.h>		// getpid()
+#include <hal.h>
+#include <inifile.hh>
+#include <kinematics_user.h>
+#include <motion_planning/segment_cap.hh>
+
+using namespace linuxcnc;
 
 //#define EMCCANON_DEBUG
 
@@ -95,7 +106,7 @@ static int debug_velacc = 0;
 static StateTag _tag;
 
 void UPDATE_TAG(const StateTag& tag) {
-    canon_debug("--Got UPDATE_TAG: %d--\n",tag.fields[GM_FIELD_LINE_NUMBER]);
+    canon_debug("--Got UPDATE_TAG: %ld--\n", (long)tag.fields[GM_FIELD_LINE_NUMBER]);
     _tag = tag;
 }
 
@@ -191,13 +202,46 @@ static void rotate(double &x, double &y, double theta) {
 }
 
 
+// The tilted work plane, the innermost stage of the chain: what a program
+// calls X Y Z is R * xyz + O in the coordinate system that was active when
+// the plane was defined.  Rotary and UVW words do not pass through it.
+static void g68_apply(double &x, double &y, double &z) {
+    if (!canon.g68Active) { return; }
+    const double *r = canon.g68Rotation;
+    double px = x, py = y, pz = z;
+    x = r[0]*px + r[1]*py + r[2]*pz + canon.g68Offset[0];
+    y = r[3]*px + r[4]*py + r[5]*pz + canon.g68Offset[1];
+    z = r[6]*px + r[7]*py + r[8]*pz + canon.g68Offset[2];
+}
+
+static void g68_remove(double &x, double &y, double &z) {
+    if (!canon.g68Active) { return; }
+    const double *r = canon.g68Rotation;
+    double px = x - canon.g68Offset[0];
+    double py = y - canon.g68Offset[1];
+    double pz = z - canon.g68Offset[2];
+    x = r[0]*px + r[3]*py + r[6]*pz;
+    y = r[1]*px + r[4]*py + r[7]*pz;
+    z = r[2]*px + r[5]*py + r[8]*pz;
+}
+
+// a direction: the rotation of the plane without its origin
+static void g68_rotate(double &x, double &y, double &z) {
+    if (!canon.g68Active) { return; }
+    const double *r = canon.g68Rotation;
+    double px = x, py = y, pz = z;
+    x = r[0]*px + r[1]*py + r[2]*pz;
+    y = r[3]*px + r[4]*py + r[5]*pz;
+    z = r[6]*px + r[7]*py + r[8]*pz;
+}
+
 /**
- * Implementation of planar rotation for a 3D vector.
- * This is basically a shortcut for "rotate" when the values are stored in a
- * cartesian vector.
+ * Rotation of a direction vector into the world frame: the tilted work
+ * plane first, then the planar rotation about Z.
  * The use of static "xy_rotation" is ugly here, but is at least consistent.
  */
 static void to_rotated(PM_CARTESIAN &vec) {
+    g68_rotate(vec.x, vec.y, vec.z);
     rotate(vec.x,vec.y,canon.xy_rotation);
 }
 #if 0
@@ -206,6 +250,8 @@ static void from_rotated(PM_CARTESIAN &vec) {
 }
 #endif
 static void rotate_and_offset(CANON_POSITION & pos) {
+
+    g68_apply(pos.x, pos.y, pos.z);
 
     pos += canon.g92Offset;
 
@@ -217,6 +263,8 @@ static void rotate_and_offset(CANON_POSITION & pos) {
 }
 
 static void rotate_and_offset_xyz(PM_CARTESIAN & xyz) {
+
+    g68_apply(xyz.x, xyz.y, xyz.z);
 
     xyz += canon.g92Offset.xyz();
 
@@ -242,10 +290,14 @@ static CANON_POSITION unoffset_and_unrotate_pos(const CANON_POSITION& pos) {
 
     res -= canon.g92Offset;
 
+    g68_remove(res.x, res.y, res.z);
+
     return res;
 }
 
 static void rotate_and_offset_pos(double &x, double &y, double &z, double &a, double &b, double &c, double &u, double &v, double &w) {
+    g68_apply(x, y, z);
+
     x += canon.g92Offset.x;
     y += canon.g92Offset.y;
     z += canon.g92Offset.z;
@@ -439,6 +491,13 @@ static double toExtVel(double vel) {
 
 static double toExtAcc(double acc) { return toExtVel(acc); }
 
+static double fromExtVel(double vel) {
+    if (!canon.cartesian_move && canon.angular_move) {
+        return FROM_EXT_ANG(vel);
+    }
+    return FROM_EXT_LEN(vel);
+}
+
 static void send_g5x_msg(int index) {
     flush_segments();
 
@@ -505,6 +564,26 @@ void HOME_CYCLE_JOINT(int joint)
     flush_segments(); // see HOME_CYCLE
     auto msg = std::make_unique<EMC_JOINT_HOME>();
     msg->joint = joint;
+    interp_list.append(std::move(msg));
+}
+
+void SET_G68_FRAME(double x, double y, double z,
+                   const double rotation[9], int active)
+{
+    flush_segments();
+
+    canon.g68Offset[0] = FROM_PROG_LEN(x);
+    canon.g68Offset[1] = FROM_PROG_LEN(y);
+    canon.g68Offset[2] = FROM_PROG_LEN(z);
+    for (int i = 0; i < 9; i++) { canon.g68Rotation[i] = rotation[i]; }
+    canon.g68Active = active;
+
+    auto msg = std::make_unique<EMC_TRAJ_SET_G68>();
+    msg->origin.tran.x = TO_EXT_LEN(canon.g68Offset[0]);
+    msg->origin.tran.y = TO_EXT_LEN(canon.g68Offset[1]);
+    msg->origin.tran.z = TO_EXT_LEN(canon.g68Offset[2]);
+    for (int i = 0; i < 9; i++) { msg->rotation[i] = rotation[i]; }
+    msg->active = active;
     interp_list.append(std::move(msg));
 }
 
@@ -773,6 +852,306 @@ static double getStraightJerk(double x, double y, double z,
     return 0.0; // a move to nowhere
 }
 
+//----------------------------------------------------------------------
+// The kinematics ahead of motion: what the joints allow a segment.
+//
+// A segment is planned in world coordinates against the [AXIS_L]
+// velocity and acceleration limits, which say nothing about the joints
+// once the kinematics is not the identity: a turn of a tilted head under
+// the tool centre point swings a carriage through a circle the head's
+// own limit never mentions.  So every segment is also sampled through
+// the module's Jacobian here, on the kinematics type and the tool offset
+// the program is under (canon runs ahead of motion, so neither is what
+// the machine has reached), and its velocity and acceleration are
+// lowered to what the slowest joint can follow.  The module is the one
+// motion runs, loaded through the non-RT loader in kinematics_userspace/
+// the first time a segment asks.  A module that runs only in realtime,
+// and a kinematics type that is the identity, cap nothing.
+//----------------------------------------------------------------------
+
+static struct {
+    KinematicsUserContext *ctx;
+    int comp_id;
+    bool tried;                 // loading was attempted, once
+    int type;                   // the kinematics type the program is in, -1 for the machine's
+    double joints[EMCMOT_MAX_JOINTS];   // the joints at canon.endPoint, as far as canon knows
+    bool in_arc;                // ARC_FEED caps the arc itself; the straight helpers stand back
+    bool debug;                 // EMCCANON_KINS_DEBUG in the environment: say what every segment got
+    motion_planning::SegmentCapLimits limits;
+    // the last straight segment's answer, since its velocity and its
+    // acceleration are asked for separately
+    struct {
+        bool valid;
+        EmcPose start, end;
+        bool capped;
+        double vel, acc;
+    } memo;
+} kins = { NULL, -1, false, -1, {}, false, false, {}, { false, {}, {}, false, 0.0, 0.0 } };
+
+// the machine's own module, once
+static bool kins_load(void)
+{
+    char name[HAL_NAME_LEN + 1];
+    int joints, j;
+
+    if (kins.tried) { return kins.ctx != NULL; }
+    kins.tried = true;
+    linuxcnc::IniFile ini(emc_inifile);
+    if (!ini) { return false; }
+    auto module = ini.findString("KINEMATICS", "KINS");
+    joints = ini.findIntV("JOINTS", "KINS", 0);
+    if (!module || joints < 1) { return false; }
+    snprintf(name, sizeof(name), "canon.%d", (int)getpid());
+    kins.comp_id = hal_init(name);
+    if (kins.comp_id < 0) { return false; }
+    kins.ctx = kinematicsUserInitString(module->c_str(), joints, kins.comp_id, name);
+    hal_ready(kins.comp_id);
+    if (kins.ctx && kinematicsUserIsRtOnly(kins.ctx)) {
+        kinematicsUserFree(kins.ctx);
+        kins.ctx = NULL;
+    }
+    if (!kins.ctx) {
+        hal_exit(kins.comp_id);
+        kins.comp_id = -1;
+        return false;
+    }
+    // the joint limits as the INI gives them; one left out binds nothing
+    kins.limits.joints = kinematicsUserGetNumJoints(kins.ctx);
+    for (j = 0; j < KINEMATICS_USER_MAX_JOINTS; j++) {
+        double vel = j < kins.limits.joints ? emcJointGetMaxVelocity(j) : 0.0;
+        double acc = j < kins.limits.joints ? emcJointGetMaxAcceleration(j) : 0.0;
+        kins.limits.vel[j] = vel > 0.0 ? vel : SEGMENT_CAP_NONE;
+        kins.limits.acc[j] = acc > 0.0 ? acc : SEGMENT_CAP_NONE;
+    }
+    for (j = 0; j < EMCMOT_MAX_JOINTS; j++) { kins.joints[j] = 0.0; }
+    kins.debug = getenv("EMCCANON_KINS_DEBUG") != NULL;
+    if (kins.debug) {
+        fprintf(stderr, "canon kins: %s, %d joints, limits", module->c_str(), kins.limits.joints);
+        for (j = 0; j < kins.limits.joints; j++) {
+            fprintf(stderr, " %g/%g", kins.limits.vel[j], kins.limits.acc[j]);
+        }
+        fprintf(stderr, "\n");
+    }
+    return true;
+}
+
+// the module on the type and the tool offset the program is under, or
+// NULL where there is nothing to cap with
+static KinematicsUserContext *kins_here(void)
+{
+    int type = kins.type >= 0 ? kins.type : GET_EXTERNAL_KINS_TYPE();
+    int flags = GET_EXTERNAL_KINS_TYPE_FLAGS(type);
+    EmcPose tool;
+
+    // the identity, whether the module as a whole is one or the type in
+    // force is, needs no module loaded to know the joints are the axes
+    if (GET_EXTERNAL_KINEMATICS_IDENTITY()) { return NULL; }
+    if (flags >= 0 && (flags & KINSTYPE_IDENTITY)) { return NULL; }
+    if (!kins_load()) { return NULL; }
+    if (kinematicsUserSetType(kins.ctx, type) != 0) { return NULL; }
+    if (kinematicsUserIsIdentity(kins.ctx)) { return NULL; }
+    tool = to_ext_pose(canon.toolOffset.tran.x, canon.toolOffset.tran.y, canon.toolOffset.tran.z,
+                       canon.toolOffset.a, canon.toolOffset.b, canon.toolOffset.c,
+                       canon.toolOffset.u, canon.toolOffset.v, canon.toolOffset.w);
+    kinematicsUserSetTool(kins.ctx, &tool);
+    return kins.ctx;
+}
+
+// whether two machine points are the same, to a hair either way
+static bool kins_same(const EmcPose *a, const EmcPose *b)
+{
+    const double tol = 1e-6;
+
+    return fabs(a->tran.x - b->tran.x) < tol && fabs(a->tran.y - b->tran.y) < tol
+        && fabs(a->tran.z - b->tran.z) < tol
+        && fabs(a->a - b->a) < tol && fabs(a->b - b->b) < tol && fabs(a->c - b->c) < tol
+        && fabs(a->u - b->u) < tol && fabs(a->v - b->v) < tol && fabs(a->w - b->w) < tol;
+}
+
+// the joints at the start of a segment, as far as canon can know ahead of
+// motion: the ones it holds while they still explain the point, since a
+// point does not name one joint set, else the joints the machine stands
+// in if those do, else the inverse iterated to a fixed point
+static void kins_seed(KinematicsUserContext *ctx, const EmcPose *start)
+{
+    double standing[EMCMOT_MAX_JOINTS] = {0};
+    EmcPose seeded = *start;
+    int i, n, pass;
+
+    if (kinematicsUserForward(ctx, kins.joints, &seeded) == 0 && kins_same(&seeded, start)) { return; }
+    n = GET_EXTERNAL_JOINT_POSITIONS(standing, EMCMOT_MAX_JOINTS);
+    if (n > 0) {
+        seeded = *start;
+        if (kinematicsUserForward(ctx, standing, &seeded) == 0 && kins_same(&seeded, start)) {
+            for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { kins.joints[i] = standing[i]; }
+            return;
+        }
+    }
+    for (pass = 0; pass < 8; pass++) {
+        double prev[EMCMOT_MAX_JOINTS], worst = 0.0;
+        for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { prev[i] = kins.joints[i]; }
+        if (kinematicsUserInverse(ctx, start, kins.joints) != 0) { return; }
+        for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { worst = fmax(worst, fabs(kins.joints[i] - prev[i])); }
+        if (worst < 1e-9) { break; }
+    }
+}
+
+// how many points to sample a segment at: enough that a turn of the
+// rotaries, a stretch of travel on a machine whose Jacobian changes with
+// position, or a sweep of arc is seen every few degrees or centimetres
+static int kins_samples(const EmcPose *start, const EmcPose *end, double sweep_deg)
+{
+    double rot = fmax(fabs(end->a - start->a), fmax(fabs(end->b - start->b), fabs(end->c - start->c)));
+    double lin = sqrt(pow(end->tran.x - start->tran.x, 2) + pow(end->tran.y - start->tran.y, 2)
+                      + pow(end->tran.z - start->tran.z, 2));
+    int n = 3 + (int)ceil(rot / 10.0) + (int)ceil(lin / 50.0) + (int)ceil(sweep_deg / 10.0);
+
+    return n > SEGMENT_CAP_MAX_SAMPLES ? SEGMENT_CAP_MAX_SAMPLES : n;
+}
+
+// what the joints allow along a segment, in the machine's units per second
+// of the path parameter canon plans it with; false where nothing binds
+static bool kins_cap(KinematicsUserContext *ctx, const EmcPose *start, const EmcPose *end,
+                     double length, int samples, motion_planning::SegmentPoseFn pose_at, void *arg,
+                     double *vel, double *acc)
+{
+    motion_planning::SegmentCap cap;
+
+    kins_seed(ctx, start);
+    if (motion_planning::segmentCap(ctx, &kins.limits, length, samples, pose_at, arg, kins.joints, &cap) != 0) {
+        CANON_ERROR(fmt::format("the kinematics cannot reach the move to X{:.3f} Y{:.3f} Z{:.3f} A{:.3f} B{:.3f} C{:.3f}, the joints are not checked along it",
+                    end->tran.x, end->tran.y, end->tran.z, end->a, end->b, end->c));
+        return false;
+    }
+    if (cap.unanswered) {
+        CANON_ERROR(fmt::format("the kinematics cannot reach {} of {} points on the move to X{:.3f} Y{:.3f} Z{:.3f} A{:.3f} B{:.3f} C{:.3f}, the joints are not checked there",
+                    cap.unanswered, cap.samples, end->tran.x, end->tran.y, end->tran.z, end->a, end->b, end->c));
+    }
+    // a pole: some joint would have to move at any speed at all for the
+    // path to advance, and the move crawls rather than being dropped,
+    // since a dropped segment would send the next one along another path
+    if (cap.vel_joint >= 0 && cap.vel < 1e-3) {
+        CANON_ERROR(fmt::format("joint {} cannot follow the move to X{:.3f} Y{:.3f} Z{:.3f} A{:.3f} B{:.3f} C{:.3f} near {:.0f}% of its length: the kinematics is singular there and the move crawls",
+                    cap.vel_joint, end->tran.x, end->tran.y, end->tran.z, end->a, end->b, end->c, 100.0 * cap.vel_at));
+    }
+    if (kins.debug) {
+        fprintf(stderr, "canon kins: to X%.3f Y%.3f Z%.3f A%.3f B%.3f C%.3f length %.3f in %d samples: vel %.3f (joint %d at %.2f) acc %.3f (joint %d), %d unanswered; seed",
+                end->tran.x, end->tran.y, end->tran.z, end->a, end->b, end->c, length, cap.samples,
+                cap.vel, cap.vel_joint, cap.vel_at, cap.acc, cap.acc_joint, cap.unanswered);
+        for (int j = 0; j < kins.limits.joints; j++) { fprintf(stderr, " %.3f", kins.joints[j]); }
+        fprintf(stderr, "\n");
+    }
+    *vel = cap.vel;
+    *acc = cap.acc;
+    return cap.vel_joint >= 0 || cap.acc_joint >= 0;
+}
+
+struct KinsLine {
+    EmcPose start, end;
+};
+
+static void kins_line_pose(double f, EmcPose *pose, void *arg)
+{
+    const KinsLine *line = (const KinsLine *)arg;
+
+    pose->tran.x = line->start.tran.x + f * (line->end.tran.x - line->start.tran.x);
+    pose->tran.y = line->start.tran.y + f * (line->end.tran.y - line->start.tran.y);
+    pose->tran.z = line->start.tran.z + f * (line->end.tran.z - line->start.tran.z);
+    pose->a = line->start.a + f * (line->end.a - line->start.a);
+    pose->b = line->start.b + f * (line->end.b - line->start.b);
+    pose->c = line->start.c + f * (line->end.c - line->start.c);
+    pose->u = line->start.u + f * (line->end.u - line->start.u);
+    pose->v = line->start.v + f * (line->end.v - line->start.v);
+    pose->w = line->start.w + f * (line->end.w - line->start.w);
+}
+
+// the cap on a straight segment from canon.endPoint, in the machine's
+// units per second of the parameter getStraightVelocity() plans it with,
+// the length along the axes getStraightSpan() measures
+static bool kins_straight_cap(double x, double y, double z,
+                              double a, double b, double c,
+                              double u, double v, double w,
+                              double *vel, double *acc)
+{
+    KinematicsUserContext *ctx;
+    KinsLine line;
+    double length;
+
+    if (kins.in_arc) { return false; }
+    line.start = to_ext_pose(canon.endPoint);
+    line.end = to_ext_pose(x, y, z, a, b, c, u, v, w);
+    if (kins.memo.valid && kins_same(&kins.memo.start, &line.start) && kins_same(&kins.memo.end, &line.end)) {
+        *vel = kins.memo.vel;
+        *acc = kins.memo.acc;
+        return kins.memo.capped;
+    }
+    ctx = kins_here();
+    if (!ctx) { return false; }
+    // the length getStraightVelocity() plans the segment along
+    StraightSpan span = getStraightSpan(x, y, z, a, b, c, u, v, w);
+    if (!span.moving) {
+        return false;
+    }
+    length = axisKindsMeasuredAngular(kinds, span.measured) ?
+        TO_EXT_ANG(span.length) : TO_EXT_LEN(span.length);
+    kins.memo.valid = true;
+    kins.memo.start = line.start;
+    kins.memo.end = line.end;
+    kins.memo.capped = kins_cap(ctx, &line.start, &line.end, length,
+                                kins_samples(&line.start, &line.end, 0.0),
+                                kins_line_pose, &line, &kins.memo.vel, &kins.memo.acc);
+    *vel = kins.memo.vel;
+    *acc = kins.memo.acc;
+    return kins.memo.capped;
+}
+
+struct KinsArc {
+    PmCircle circle;            // in canon's units, as ARC_FEED builds it
+    bool line;                  // no turn at all: the chord
+    EmcPose start, end;
+};
+
+static void kins_arc_pose(double f, EmcPose *pose, void *arg)
+{
+    const KinsArc *arc = (const KinsArc *)arg;
+    PmCartesian p;
+
+    kins_line_pose(f, pose, (void *)&arc->start);
+    if (arc->line) { return; }
+    pmCirclePoint(&arc->circle, f * arc->circle.angle, &p);
+    pose->tran.x = TO_EXT_LEN(p.x);
+    pose->tran.y = TO_EXT_LEN(p.y);
+    pose->tran.z = TO_EXT_LEN(p.z);
+}
+
+// the cap on an arc from canon.endPoint, in the machine's units per
+// second of the XYZ length ARC_FEED plans it with
+static bool kins_arc_cap(const PM_CARTESIAN &center, const PM_CARTESIAN &normal,
+                         const PM_CARTESIAN &end_xyz, const CANON_POSITION &endpt,
+                         int rotation, double length, double full_angle,
+                         double *vel, double *acc)
+{
+    KinematicsUserContext *ctx = kins_here();
+    KinsArc arc;
+
+    if (!ctx || length <= 0.0) { return false; }
+    arc.start = to_ext_pose(canon.endPoint);
+    arc.end = to_ext_pose(endpt);
+    arc.line = rotation == 0;
+    if (!arc.line) {
+        PmCartesian s = { canon.endPoint.x, canon.endPoint.y, canon.endPoint.z };
+        PmCartesian e = { end_xyz.x, end_xyz.y, end_xyz.z };
+        PmCartesian c = { center.x, center.y, center.z };
+        PmCartesian n = { normal.x, normal.y, normal.z };
+        if (pmCircleInit(&arc.circle, &s, &e, &c, &n, rotation > 0 ? rotation - 1 : rotation) != 0) {
+            return false;
+        }
+    }
+    return kins_cap(ctx, &arc.start, &arc.end, TO_EXT_LEN(length),
+                    kins_samples(&arc.start, &arc.end, fabs(full_angle) * 180.0 / M_PI),
+                    kins_arc_pose, &arc, vel, acc);
+}
+
 /**
  * Get the limiting acceleration for a displacement from the current position to the given position.
  * returns a single acceleration that is the minimum of all axis accelerations.
@@ -801,6 +1180,14 @@ static AccelData getStraightAcceleration(double x, double y, double z,
     }
     if (out.tmax > 0.0) {
         out.acc = out.dtot / out.tmax;
+    }
+    // and what the joints allow, through the kinematics
+    {
+        double kvel, kacc;
+        if (out.acc > 0.0 && kins_straight_cap(x, y, z, a, b, c, u, v, w, &kvel, &kacc)
+            && fromExtVel(kacc) < out.acc) {
+            out.acc = fromExtVel(kacc);
+        }
     }
     if(debug_velacc)
         printf("cartesian %d ang %d acc %g\n", canon.cartesian_move, canon.angular_move, out.acc);
@@ -845,6 +1232,14 @@ static VelData getStraightVelocity(double x, double y, double z,
         out.vel = canon.angularFeedRate;
     } else {
         out.vel = canon.linearFeedRate;
+    }
+    // and what the joints allow, through the kinematics
+    {
+        double kvel, kacc;
+        if (out.vel > 0.0 && kins_straight_cap(x, y, z, a, b, c, u, v, w, &kvel, &kacc)
+            && fromExtVel(kvel) < out.vel) {
+            out.vel = fromExtVel(kvel);
+        }
     }
     if(debug_velacc)
         printf("cartesian %d ang %d vel %g\n", canon.cartesian_move, canon.angular_move, out.vel);
@@ -1034,6 +1429,10 @@ void SELECT_KINS_TYPE(int switchkins_type)
 {
     flush_segments();
 
+    // the segments from here on run under it
+    kins.type = switchkins_type;
+    kins.memo.valid = false;
+
     auto selectKinsMsg = std::make_unique<EMC_TRAJ_SELECT_KINS>();
 
     selectKinsMsg->switchkins_type = switchkins_type;
@@ -1081,6 +1480,47 @@ void generate_fast_move(double x, double y, double z,
 	    START_SPEED_FEED_SYNCH(0, canon.linearFeedRate, 1);
 
     canonUpdateEndPoint(x, y, z, a, b, c, u, v, w);
+}
+
+static void joint_move(int line_number, const double *joints, int have_joints,
+                       double x, double y, double z,
+                       double a, double b, double c,
+                       double u, double v, double w,
+                       double seconds)
+{
+    auto msg = std::make_unique<EMC_TRAJ_JOINT_MOVE>();
+
+    flush_segments();
+    from_prog(x,y,z,a,b,c,u,v,w);
+    rotate_and_offset_pos(x,y,z,a,b,c,u,v,w);
+
+    msg->end = to_ext_pose(x, y, z, a, b, c, u, v, w);
+    msg->have_joints = have_joints ? 1 : 0;
+    for (int i = 0; i < EMCMOT_MAX_JOINTS; i++) {
+        msg->joints[i] = (have_joints && joints) ? joints[i] : 0.0;
+    }
+    msg->seconds = seconds;
+    interp_list.set_line_number(line_number);
+    tag_and_send(std::move(msg), _tag);
+
+    canonUpdateEndPoint(x, y, z, a, b, c, u, v, w);
+}
+
+void JOINT_TRAVERSE(int line_number, const double *joints, int have_joints,
+                    double x, double y, double z,
+                    double a, double b, double c,
+                    double u, double v, double w)
+{
+    joint_move(line_number, joints, have_joints, x, y, z, a, b, c, u, v, w, 0.0);
+}
+
+void JOINT_FEED(int line_number, const double *joints, int have_joints,
+                double x, double y, double z,
+                double a, double b, double c,
+                double u, double v, double w,
+                double seconds)
+{
+    joint_move(line_number, joints, have_joints, x, y, z, a, b, c, u, v, w, seconds);
 }
 
 void generate_move(double vel,double x, double y, double z,
@@ -1343,13 +1783,14 @@ void STOP_CUTTER_RADIUS_COMPENSATION()
 
 
 
-void START_SPEED_FEED_SYNCH(int spindle, double feed_per_revolution, bool velocity_mode)
+void START_SPEED_FEED_SYNCH(int spindle, double feed_per_revolution, bool velocity_mode, double angle_degrees)
 {
     flush_segments();
     auto spindleSyncMsg = std::make_unique<EMC_TRAJ_SET_SPINDLESYNC>();
     spindleSyncMsg->spindle = spindle;
     spindleSyncMsg->feed_per_revolution = TO_EXT_LEN(FROM_PROG_LEN(feed_per_revolution));
     spindleSyncMsg->velocity_mode = velocity_mode;
+    spindleSyncMsg->angular_offset_degrees = angle_degrees;
     interp_list.append(std::move(spindleSyncMsg));
     canon.spindle[spindle].synched = 1;
 }
@@ -2427,7 +2868,9 @@ void ARC_FEED(int line_number,
 	canon_debug("line = %d\n", line_number);
 	canon_debug("first_end = %f, second_end = %f\n", first_end,second_end);
 
-    if( canon.activePlane == CANON_PLANE::XY && canon.motionMode == CANON_CONTINUOUS) {
+    // the naive cam detector works on the world XY projection of the arc,
+    // which a tilted work plane takes out of the XY plane
+    if( canon.activePlane == CANON_PLANE::XY && canon.motionMode == CANON_CONTINUOUS && !canon.g68Active) {
 		double mx, my;
 		double lx, ly, lz;
 		double unused = 0;
@@ -2661,7 +3104,7 @@ void ARC_FEED(int line_number,
     double j2 = FROM_EXT_LEN(emcAxisGetMaxJerk(axis2));
     double j_min = MIN(j1, j2);
 
-    if(canon.xy_rotation && canon.activePlane != CANON_PLANE::XY) {
+    if((canon.xy_rotation && canon.activePlane != CANON_PLANE::XY) || canon.g68Active) {
         // also consider the third plane's constraint, which may get
         // involved since we're rotated.
 
@@ -2690,6 +3133,7 @@ void ARC_FEED(int line_number,
 
     // Find the equivalent maximum velocity for a linear displacement
     // This accounts for speed restrictions due to helical and other axes
+    kins.in_arc = true;
     VelData veldata = getStraightVelocity(endpt);
 
     // Compute spiral length, first by the minimum circular arc length
@@ -2722,6 +3166,7 @@ void ARC_FEED(int line_number,
     // Use "straight" acceleration measure to compute acceleration bounds due
     // to non-circular components (helical axis, other axes)
     AccelData accdata = getStraightAcceleration(endpt);
+    kins.in_arc = false;
 
     double tt_max_motion = accdata.tmax;
     double tt_max_spiral = spiral_length / a_max_axes;
@@ -2730,6 +3175,16 @@ void ARC_FEED(int line_number,
     // a_max could be higher than a_max_axes, but the projection onto the
     // circle plane and helical axis will still be within limits
     double a_max = total_xyz_length / tt_max;
+
+    // and what the joints allow along the arc, through the kinematics
+    {
+        double kvel, kacc;
+        if (kins_arc_cap(center_cart, normal_cart, end_cart, endpt, rotation,
+                         total_xyz_length, full_angle, &kvel, &kacc)) {
+            v_max = std::min(v_max, FROM_EXT_LEN(kvel));
+            a_max = std::min(a_max, FROM_EXT_LEN(kacc));
+        }
+    }
 
     // Limit velocity by maximum
     double vel = std::min(canon.linearFeedRate, v_max);
@@ -2932,7 +3387,7 @@ void SET_TOOL_TABLE_ENTRY(int pocket, int toolno, const EmcPose& offset, double 
   EMC has no tool length offset. To implement it, we save it here,
   and apply it when necessary
   */
-void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset)
+static void use_tool_length_offset(const EmcPose& offset, const EmcPose *point)
 {
     auto set_offset_msg = std::make_unique<EMC_TRAJ_SET_OFFSET>();
 
@@ -2948,6 +3403,7 @@ void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset)
     canon.toolOffset.u = FROM_PROG_AX(AXIS_U, offset.u);
     canon.toolOffset.v = FROM_PROG_AX(AXIS_V, offset.v);
     canon.toolOffset.w = FROM_PROG_AX(AXIS_W, offset.w);
+    kins.memo.valid = false;
 
     /* append it to interp list so it gets updated at the right time, not at
        read-ahead time */
@@ -2961,12 +3417,32 @@ void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset)
     set_offset_msg->offset.v = TO_EXT_AX(AXIS_V, canon.toolOffset.v);
     set_offset_msg->offset.w = TO_EXT_AX(AXIS_W, canon.toolOffset.w);
 
+    set_offset_msg->have_point = (point != nullptr);
+    if (point) {
+        CANON_POSITION at(*point);
+        from_prog(at);
+        set_offset_msg->point = to_ext_pose(at);
+        // motion keeps the joints and stands on the point, so the next
+        // segment starts there and not where the old offset put it
+        canonUpdateEndPoint(at);
+    }
+
     for (int s = 0; s < emcStatus->motion.traj.spindles; s++){
         if(canon.spindle[s].css_maximum) {
             SET_SPINDLE_SPEED(s, canon.spindle[s].speed);
         }
     }
     interp_list.append(std::move(set_offset_msg));
+}
+
+void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset)
+{
+    use_tool_length_offset(offset, nullptr);
+}
+
+void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset, const EmcPose& point)
+{
+    use_tool_length_offset(offset, &point);
 }
 
 /* CHANGE_TOOL results from M6 */
@@ -3057,11 +3533,11 @@ void SELECT_TOOL(int tool)
 }
 
 /* CHANGE_TOOL_NUMBER results from M61 */
-void CHANGE_TOOL_NUMBER(int pocket_number)
+void CHANGE_TOOL_NUMBER(int toolno)
 {
     auto emc_tool_set_number_msg = std::make_unique<EMC_TOOL_SET_NUMBER>();
-    
-    emc_tool_set_number_msg->tool = pocket_number;
+
+    emc_tool_set_number_msg->tool = toolno;
 
     interp_list.append(std::move(emc_tool_set_number_msg));
 }
@@ -3080,93 +3556,54 @@ void CLAMP_AXIS(CANON_AXIS /*axis*/)
 }
 
 /*
-  setString and addString initializes or adds src to dst, never exceeding
-  dst's maxlen chars.
-*/
-
-static char *setString(char *dst, const char *src, int maxlen)
-{
-    dst[0] = 0;
-    strncat(dst, src, maxlen - 1);
-    dst[maxlen - 1] = 0;
-    return dst;
-}
-
-static char *addString(char *dst, const char *src, int maxlen)
-{
-    int dstlen = strlen(dst);
-    int srclen = strlen(src);
-    int actlen;
-
-    if (srclen >= maxlen - dstlen) {
-	actlen = maxlen - dstlen - 1;
-	dst[maxlen - 1] = 0;
-    } else {
-	actlen = srclen;
-    }
-
-    strncat(dst, src, actlen);
-
-    return dst;
-}
-
-/*
   The probe file is opened with a hot-comment (PROBEOPEN <filename>),
   and the results of each probed point are written to that file.
   The file is closed with a (PROBECLOSE) comment.
 */
 
-static FILE *probefile = NULL;
+static std::ofstream probefile;
 
-void COMMENT(const char *comment)
+void COMMENT(std::string_view comment)
 {
     // nothing need be done here, but you can play tricks with hot comments
 
-    char msg[LINELEN];
-    char probefilename[LINELEN];
-    const char *ptr;
-
     // set RPY orientation for subsequent moves
-    if (!strncmp(comment, "RPY", strlen("RPY"))) {
-	PM_RPY rpy;
+    if (comment.starts_with("RPY")) {
 	// it's RPY <R> <P> <Y>
-	if (3 !=
-	    sscanf(comment, "%*s %lf %lf %lf", &rpy.r, &rpy.p, &rpy.y)) {
-	    // print current orientation
-	    printf("rpy = %f %f %f, quat = %f %f %f %f\n",
-		   rpy.r, rpy.p, rpy.y, quat.s, quat.x, quat.y, quat.z);
-	} else {
-	    // set and print orientation
+	std::istringstream args{std::string(comment)};
+	std::string word;
+	double r, p, y;
+	PM_RPY rpy;
+	if (args >> word >> r >> p >> y) {
+	    // set the new orientation
+	    rpy = PM_RPY(r, p, y);
 	    quat = rpy;
-	    printf("rpy = %f %f %f, quat = %f %f %f %f\n",
-		   rpy.r, rpy.p, rpy.y, quat.s, quat.x, quat.y, quat.z);
+	} else {
+	    // only show the current one
+	    rpy = quat;
 	}
+	printf("rpy = %f %f %f, quat = %f %f %f %f\n",
+	       rpy.r, rpy.p, rpy.y, quat.s, quat.x, quat.y, quat.z);
 	return;
     }
     // open probe output file
-    if (!strncmp(comment, "PROBEOPEN", strlen("PROBEOPEN"))) {
-	// position ptr to first char after PROBEOPEN
-	ptr = &comment[strlen("PROBEOPEN")];
-	// and step over white space to name, or NULL
-	while (isspace(*ptr)) {
-	    ptr++;
+    if (comment.starts_with("PROBEOPEN")) {
+	// the name follows PROBEOPEN after white space
+	std::string_view name = comment.substr(strlen("PROBEOPEN"));
+	while (!name.empty() && isspace((unsigned char)name.front())) {
+	    name.remove_prefix(1);
 	}
-	setString(probefilename, ptr, LINELEN);
-	if (NULL == (probefile = fopen(probefilename, "wt"))) {
+	probefile.close();
+	probefile.open(std::string(name));
+	if (!probefile) {
 	    // pop up a warning message
-	    setString(msg, "can't open probe file ", LINELEN);
-	    addString(msg, probefilename, LINELEN);
-	    MESSAGE(msg);
-	    probefile = NULL;
+	    MESSAGE("can't open probe file " + std::string(name));
 	}
 	return;
     }
     // close probe output file
-    if (!strncmp(comment, "PROBECLOSE", strlen("PROBECLOSE"))) {
-	if (probefile != NULL) {
-	    fclose(probefile);
-	    probefile = NULL;
-	}
+    if (comment.starts_with("PROBECLOSE")) {
+	probefile.close();
 	return;
     }
 
@@ -3276,41 +3713,43 @@ void FLOOD_ON()
     SIMPLE_COMMAND_<EMC_COOLANT_FLOOD_ON>();
 }
 
-void MESSAGE(char *s)
+void MESSAGE(std::string_view s)
 {
     auto operator_display_msg = std::make_unique<EMC_OPERATOR_DISPLAY>();
 
     flush_segments();
-    strncpy(operator_display_msg->display, s, LINELEN-1);
-    operator_display_msg->display[LINELEN - 1] = 0;
+    const size_t n = std::min(s.size(), size_t(LINELEN - 1));
+    s.copy(operator_display_msg->display, n);
+    operator_display_msg->display[n] = 0;
     interp_list.append(std::move(operator_display_msg));
 }
 
-static FILE *logfile = NULL;
+static std::ofstream logfile;
 
-void LOG(char *s) {
+void LOG(std::string_view s) {
     flush_segments();
-    if(logfile) { fprintf(logfile, "%s\n", s); fflush(logfile); }
-    fprintf(stderr, "LOG(%s)\n", s);
-
+    if(logfile.is_open()) logfile << s << std::endl;
+    std::cerr << "LOG(" << s << ")\n";
 }
 
-void LOGOPEN(char *name) {
-    if(logfile) fclose(logfile);
-    logfile = fopen(name, "wt");
-    fprintf(stderr, "LOGOPEN(%s) -> %p\n", name, logfile);
+static void log_open(std::string_view name, std::ios::openmode mode, const char *what) {
+    logfile.close();
+    logfile.clear();
+    logfile.open(std::string(name), mode);
+    std::cerr << what << "(" << name << ") -> " << (logfile ? "open" : "failed") << "\n";
 }
 
-void LOGAPPEND(char *name) {
-    if(logfile) fclose(logfile);
-    logfile = fopen(name, "at");
-    fprintf(stderr, "LOGAPPEND(%s) -> %p\n", name, logfile);
+void LOGOPEN(std::string_view name) {
+    log_open(name, std::ios::out | std::ios::trunc, "LOGOPEN");
+}
+
+void LOGAPPEND(std::string_view name) {
+    log_open(name, std::ios::out | std::ios::app, "LOGAPPEND");
 }
 
 
 void LOGCLOSE() {
-    if(logfile) fclose(logfile);
-    logfile = NULL;
+    logfile.close();
     fprintf(stderr, "LOGCLOSE()\n");
 }
 
@@ -3385,49 +3824,19 @@ void PROGRAM_END()
     SIMPLE_COMMAND_<EMC_TASK_PLAN_END, false>();
 }
 
-double GET_EXTERNAL_TOOL_LENGTH_XOFFSET()
+EmcPose GET_EXTERNAL_TOOL_LENGTH_OFFSET()
 {
-    return TO_PROG_LEN(canon.toolOffset.tran.x);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_YOFFSET()
-{
-    return TO_PROG_LEN(canon.toolOffset.tran.y);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_ZOFFSET()
-{
-    return TO_PROG_LEN(canon.toolOffset.tran.z);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_AOFFSET()
-{
-    return TO_PROG_AX(AXIS_A, canon.toolOffset.a);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_BOFFSET()
-{
-    return TO_PROG_AX(AXIS_B, canon.toolOffset.b);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_COFFSET()
-{
-    return TO_PROG_AX(AXIS_C, canon.toolOffset.c);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_UOFFSET()
-{
-    return TO_PROG_AX(AXIS_U, canon.toolOffset.u);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_VOFFSET()
-{
-    return TO_PROG_AX(AXIS_V, canon.toolOffset.v);
-}
-
-double GET_EXTERNAL_TOOL_LENGTH_WOFFSET()
-{
-    return TO_PROG_AX(AXIS_W, canon.toolOffset.w);
+    EmcPose off;
+    off.tran.x = TO_PROG_LEN(canon.toolOffset.tran.x);
+    off.tran.y = TO_PROG_LEN(canon.toolOffset.tran.y);
+    off.tran.z = TO_PROG_LEN(canon.toolOffset.tran.z);
+    off.a = TO_PROG_AX(AXIS_A, canon.toolOffset.a);
+    off.b = TO_PROG_AX(AXIS_B, canon.toolOffset.b);
+    off.c = TO_PROG_AX(AXIS_C, canon.toolOffset.c);
+    off.u = TO_PROG_AX(AXIS_U, canon.toolOffset.u);
+    off.v = TO_PROG_AX(AXIS_V, canon.toolOffset.v);
+    off.w = TO_PROG_AX(AXIS_W, canon.toolOffset.w);
+    return off;
 }
 
 /*
@@ -3442,6 +3851,9 @@ void INIT_CANON()
 
     // initialize locals to original values
     canon.xy_rotation = 0.0;
+    canon.g68Offset[0] = canon.g68Offset[1] = canon.g68Offset[2] = 0.0;
+    for (int i = 0; i < 9; i++) { canon.g68Rotation[i] = (i % 4 == 0) ? 1.0 : 0.0; }
+    canon.g68Active = 0;
     canon.rotary_unlock_for_traverse = -1;
     canon.feed_mode = 0;
     canon.g5xOffset.x = 0.0;
@@ -3476,12 +3888,14 @@ void INIT_CANON()
     canon.linearFeedRate = 0.0;
     canon.angularFeedRate = 0.0;
     ZERO_EMC_POSE(canon.toolOffset);
+    kins.type = -1;
+    kins.memo.valid = false;
 
     {
         std::string err;
         linuxcnc::IniFile ini(emc_inifile);
         if (axisKindsRead(ini, &kinds, &err)) {
-            rcs_print_error("%s\n", err.c_str());
+            log_error("{}\n", err);
         }
     }
 
@@ -3510,20 +3924,15 @@ void INIT_CANON()
 }
 
 /* Sends error message */
-void CANON_ERROR(const char *fmt, ...)
+void CANON_ERROR(std::string_view message)
 {
-    va_list ap;
     auto operator_error_msg = std::make_unique<EMC_OPERATOR_ERROR>();
 
     flush_segments();
 
-    if (fmt != NULL) {
-	    va_start(ap, fmt);
-	    vsnprintf(operator_error_msg->error, sizeof(operator_error_msg->error), fmt, ap);
-	    va_end(ap);
-    } else {
-	    operator_error_msg->error[0] = 0;
-    }
+    const size_t n = std::min(message.size(), sizeof(operator_error_msg->error) - 1);
+    message.copy(operator_error_msg->error, n);
+    operator_error_msg->error[n] = 0;
 
     interp_list.append(std::move(operator_error_msg));
 }
@@ -3551,7 +3960,7 @@ CANON_TOOL_TABLE GET_EXTERNAL_TOOL_TABLE(int idx)
         tdata.orientation = 0;
     } else {
         if (tooldata_get(&tdata,idx) != IDX_OK) {
-            rcs_print_error("UNEXPECTED idx %s %d\n",__FILE__,__LINE__);
+            log_error("UNEXPECTED idx {} {}\n",__FILE__,__LINE__);
         }
     }
     return tdata;
@@ -3618,9 +4027,9 @@ CANON_POSITION GET_EXTERNAL_PROBE_POSITION()
     position = unoffset_and_unrotate_pos(pos);
     to_prog(position);
 
-    if (probefile != NULL) {
+    if (probefile.is_open()) {
 	if (last_probed_position != position) {
-	    fprintf(probefile, "%f %f %f %f %f %f %f %f %f\n",
+	    probefile << fmt::format("{:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f}\n",
                     position.x, position.y, position.z,
                     position.a, position.b, position.c,
                     position.u, position.v, position.w);
@@ -3762,154 +4171,27 @@ CANON_DIRECTION GET_EXTERNAL_SPINDLE(int spindle)
     return CANON_COUNTERCLOCKWISE;
 }
 
-static char _parameter_file_name[LINELEN];
+static std::string _parameter_file_name;
 
-void SET_PARAMETER_FILE_NAME(const char *name)
+void SET_PARAMETER_FILE_NAME(std::string_view name)
 {
-  strncpy(_parameter_file_name, name, PARAMETER_FILE_NAME_LENGTH);
+    _parameter_file_name = name;
 }
 
-void GET_EXTERNAL_PARAMETER_FILE_NAME(char *file_name,	/* string: to copy
-							   file name into */
-				      int max_size)
-{				/* maximum number of characters to copy */
-    // Paranoid checks
-    if (NULL == file_name)
-	return;
-
-    if (max_size < 0)
-	return;
-
-    if (strlen(_parameter_file_name) < ((size_t) max_size))
-	strcpy(file_name, _parameter_file_name);
-    else
-	file_name[0] = 0;
+std::string GET_EXTERNAL_PARAMETER_FILE_NAME()
+{
+    return _parameter_file_name;
 }
 
-double GET_EXTERNAL_POSITION_X(void)
+int GET_EXTERNAL_JOINT_POSITIONS(double *joints, int max)
 {
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.x;
-}
+    int n = emcStatus->motion.traj.joints;
 
-double GET_EXTERNAL_POSITION_Y(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.y;
-}
-
-double GET_EXTERNAL_POSITION_Z(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.z;
-}
-
-double GET_EXTERNAL_POSITION_A(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.a;
-}
-
-double GET_EXTERNAL_POSITION_B(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.b;
-}
-
-double GET_EXTERNAL_POSITION_C(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.c;
-}
-
-double GET_EXTERNAL_POSITION_U(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.u;
-}
-
-double GET_EXTERNAL_POSITION_V(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.v;
-}
-
-double GET_EXTERNAL_POSITION_W(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_POSITION();
-    return position.w;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_X(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.x;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_Y(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.y;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_Z(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.z;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_A(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.a;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_B(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.b;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_C(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.c;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_U(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.u;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_V(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.v;
-}
-
-double GET_EXTERNAL_PROBE_POSITION_W(void)
-{
-    CANON_POSITION position;
-    position = GET_EXTERNAL_PROBE_POSITION();
-    return position.w;
+    if (n > max) { n = max; }
+    for (int i = 0; i < n; i++) {
+        joints[i] = emcStatus->motion.joint[i].output;
+    }
+    return n;
 }
 
 CANON_MOTION_MODE GET_EXTERNAL_MOTION_CONTROL_MODE()
@@ -3922,7 +4204,10 @@ int GET_EXTERNAL_KINS_TYPE()
     // motion publishes the kinematics it is actually running, which is
     // not necessarily the one G-code last asked for: an abort can drop a
     // queued switch, and the motion.switchkins-type pin can select one
-    // without the interpreter seeing it
+    // without the interpreter seeing it.  The interpreter asks when it
+    // synchs to the machine; canon's own idea of the type goes with it
+    kins.type = -1;
+    kins.memo.valid = false;
     return emcStatus->motion.traj.switchkins_type;
 }
 
@@ -3932,6 +4217,31 @@ int GET_EXTERNAL_KINS_TYPE_FLAGS(int ktype)
     // -1 for a type it does not provide
     if (ktype < 0 || ktype >= SWITCHKINS_MAX_TYPES) return -1;
     return emcStatus->motion.traj.switchkins_flags[ktype];
+}
+
+int GET_EXTERNAL_G68_FRAME(double origin[3], double rotation[9])
+{
+    // status follows the executed commands, canon the read ahead; the
+    // plane is only usable if the read ahead left the coordinate system it
+    // sits on where the machine has it
+    EmcPose g5x = to_ext_pose(canon.g5xOffset), g92 = to_ext_pose(canon.g92Offset);
+    const EmcPose &sg5x = emcStatus->task.g5x_offset, &sg92 = emcStatus->task.g92_offset;
+
+    if (!emcStatus->task.g68_active) return 0;
+    if (fabs(g5x.tran.x - sg5x.tran.x) > 1e-9 || fabs(g5x.tran.y - sg5x.tran.y) > 1e-9
+        || fabs(g5x.tran.z - sg5x.tran.z) > 1e-9 || fabs(g92.tran.x - sg92.tran.x) > 1e-9
+        || fabs(g92.tran.y - sg92.tran.y) > 1e-9 || fabs(g92.tran.z - sg92.tran.z) > 1e-9
+        || fabs(canon.xy_rotation - emcStatus->task.rotation_xy) > 1e-9) return 0;
+    origin[0] = TO_PROG_LEN(FROM_EXT_LEN(emcStatus->task.g68_offset.tran.x));
+    origin[1] = TO_PROG_LEN(FROM_EXT_LEN(emcStatus->task.g68_offset.tran.y));
+    origin[2] = TO_PROG_LEN(FROM_EXT_LEN(emcStatus->task.g68_offset.tran.z));
+    for (int i = 0; i < 9; i++) { rotation[i] = emcStatus->task.g68_rotation[i]; }
+    return 1;
+}
+
+bool GET_EXTERNAL_KINEMATICS_IDENTITY()
+{
+    return emcStatus->motion.traj.kinematics_type == KINEMATICS_IDENTITY;
 }
 
 double GET_EXTERNAL_MOTION_CONTROL_TOLERANCE()

@@ -22,19 +22,19 @@
 #include <netdb.h>
 #include <arpa/inet.h>		// inet_ntoa
 
-#include "nml.hh"		// class NML
-#include "nmlmsg.hh"		// class NMLmsg
-#include "libnml/cms/cms.hh"		// class CMS
+#include <libnml/nml/nml.hh>		// class NML
+#include <libnml/nml/nmlmsg.hh>		// class NMLmsg
+#include <libnml/cms/cms.hh>		// class CMS
 #include "libnml/os_intf/timer.hh"		// esleep()
 #include "nml_srv.hh"		// NML_Default_Super_Server
-#include "libnml/cms/cms_cfg.hh"		// cms_config(), cms_copy()
+#include <libnml/cms/cms_cfg.hh>		// cms_config(), cms_copy()
 #include "libnml/linklist/linklist.hh"		// class LinkedList
 #include "libnml/rcs/rcs_print.hh"		// rcs_print_error()
 #include "libnml/buffer/physmem.hh"
+#include "libnml/cms/cmsdiag.hh"		// CMS_DIAG_PROC_INFO
 #ifndef MAXHOSTNAMELEN
 #define MAXHOSTNAMELEN 64
 #endif
-#include "nmldiag.hh"		// NML_DIAGNOSTICS_INFO
 /* Pointer to a global list of NML channels. */
 LinkedList *NML_Main_Channel_List = (LinkedList *) NULL;
 
@@ -1406,7 +1406,7 @@ NMLTYPE NML::peek()
 int NML::format_output()
 {
     NMLTYPE new_type;
-    long new_size;
+    int64_t new_size;
 
     /* Check pointers */
     if (NULL == cms) {
@@ -1825,7 +1825,7 @@ int NML::write_if_read(NMLmsg * nml_msg, int *serial_number)
 int NML::format_input(NMLmsg * nml_msg)
 {
     NMLTYPE new_type;
-    long new_size;
+    int64_t new_size;
     if (NULL == cms) {
 	return -1;
     }
@@ -2419,15 +2419,6 @@ int NML::get_msg_count()
 	return -1;
     }
     return cms->get_msg_count();
-}
-
-/* Get Diagnostics Information. */
-NML_DIAGNOSTICS_INFO *NML::get_diagnostics_info()
-{
-    if (NULL == cms) {
-	return NULL;
-    }
-    return reinterpret_cast<NML_DIAGNOSTICS_INFO *>(cms->get_diagnostics_info());
 }
 
 void nmlSetHostAlias(const char * const hostName, const char * const hostAlias)

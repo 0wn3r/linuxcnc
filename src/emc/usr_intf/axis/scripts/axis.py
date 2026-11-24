@@ -19,7 +19,7 @@
 
 
 # import pdb
-import sys, os
+import sys, os, subprocess
 import string
 BASE = os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), ".."))
 sys.path.insert(0, os.path.join(BASE, "lib", "python"))
@@ -55,6 +55,7 @@ Tkinter.Tk = Tk
 RTLD_NOW, RTLD_GLOBAL = 0x1, 0x100  # XXX portable?
 old_flags = sys.getdlopenflags()
 sys.setdlopenflags(RTLD_NOW | RTLD_GLOBAL);
+import axis_kinds
 import gcode
 sys.setdlopenflags(old_flags)
 from rs274.OpenGLTk import *
@@ -64,12 +65,14 @@ from rs274.program_time import (MachineLimits, format_seconds,
                                 steady_seconds)
 from hershey import Hershey
 from propertywindow import properties
+import preview_helpers
 import rs274.options
 import nf
 import locale
 import bwidget
 from math import hypot, atan2, sin, cos, pi, sqrt
 import linuxcnc
+from common.cycle_time import display_cycle_time
 from glnav import *
 
 if "AXIS_NO_HAL" in os.environ:
@@ -144,8 +147,12 @@ def key_released(ev):
 os.system("xhost -SI:localuser:gdm -SI:localuser:root > /dev/null 2>&1")
 root_window = Tkinter.Tk(className="Axis")
 tkdar.enable(root_window)  # Set detectable key repeat
-dpi_value = root_window.winfo_fpixels('1i')
-root_window.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.0)
+# Scale to the desktop's HiDPI factor (Xft.dpi): sets the pixel defaults of
+# Tk widgets.  Must run before any widget is created.
+hidpi_factor = nf.init_hidpi(root_window)
+# The preview is drawn in device pixels: widen its lines by the same factor.
+from rs274 import glcanon_gl
+glcanon_gl.set_line_scale(hidpi_factor)
 root_window.withdraw()
 nf.start(root_window)
 nf.makecommand(root_window, "_", _)
@@ -310,7 +317,7 @@ def to_internal_units(pos, unit=None):
         unit = s.linear_units
     lu = (unit or 1) * 25.4
 
-    lus = [lu, lu, lu, 1, 1, 1, lu, lu, lu]
+    lus = [1 if angular else lu for angular in axis_angular]
     return [a/b for a, b in zip(pos, lus)]
 
 def to_internal_linear_unit(v, unit=None):
@@ -324,7 +331,7 @@ def from_internal_units(pos, unit=None):
         unit = s.linear_units
     lu = (unit or 1) * 25.4
 
-    lus = [lu, lu, lu, 1, 1, 1, lu, lu, lu]
+    lus = [1 if angular else lu for angular in axis_angular]
     return [a*b for a, b in zip(pos, lus)]
 
 def from_internal_linear_unit(v, unit=None):
@@ -501,10 +508,6 @@ class MyOpengl(GlCanonDraw, Opengl):
     def is_foam(self): return foam
     def get_num_joints(self): return num_joints
     def get_program_alpha(self): return vars.program_alpha.get()
-
-    def get_a_axis_wrapped(self): return a_axis_wrapped
-    def get_b_axis_wrapped(self): return b_axis_wrapped
-    def get_c_axis_wrapped(self): return c_axis_wrapped
 
     def set_current_line(self, line):
         if line == vars.running_line.get(): return
@@ -972,7 +975,7 @@ class LivePlotter:
                 break
         vupdate(vars.on_any_limit, on_any_limit)
         global current_tool
-        current_tool = self.stat.tool_table[0]
+        current_tool = self.stat.loaded_tool
         if current_tool:
             tool_data = {'tool': current_tool[0], 'zo': current_tool[3], 'xo': current_tool[1], 'dia': current_tool[10]}
         if current_tool is None:
@@ -1311,56 +1314,13 @@ def open_file_guts(f, filtered=False, addrecent=True):
         if timeout:
             canon.set_timeout(float(timeout))
 
-        initcode = inifile.getstring("EMC", "RS274NGC_STARTUP_CODE", fallback="")
-        if initcode == "":
-            initcode = inifile.getstring("RS274NGC", "RS274NGC_STARTUP_CODE", fallback="")
-        initcodes = []
-        if initcode:
-            initcodes.append(initcode)
-        if not interpname:
-            unitcode = "G%d" % (20 + (s.linear_units == 1))
-            initcodes.append(unitcode)
-            initcodes.append("g90")
-            initcodes.append("t%d m6" % s.tool_in_spindle)
-            for i in range(9):
-                if s.axis_mask & (1<<i):
-                    axis = "XYZABCUVW"[i]
-
-                    if (axis == "A" and a_axis_wrapped) or\
-                       (axis == "B" and b_axis_wrapped) or\
-                       (axis == "C" and c_axis_wrapped):
-                        pos = s.position[i] % 360.000
-                    else:
-                        pos = s.position[i]
-
-                    position = "g53 g0 %s%.8f" % (axis, pos)
-                    initcodes.append(position)
-            for i, g in enumerate(s.gcodes):
-                # index 0 is "sequence number" and index 2 is the last block's
-                # "g_mode" neither of which should be sent as a startup code.
-                # In particular, after issuing a non-modal G like G10, that
-                # will appear at s.gcodes[2] which caused issue #269
-                if i in (0, 1, 2): continue
-                if g == -1: continue
-                if g == 960: # Issue #1232
-                    initcodes.append("G96 S%.0f" % s.settings[2])
-                else:
-                    initcodes.append("G%.1f" % (g * .1))
-            tool_offset = "G43.1"
-            for i in range(9):
-                if s.axis_mask & (1<<i):
-                    tool_offset += " %s%.8f" % ("XYZABCUVW"[i], s.tool_offset[i])
-            initcodes.append(tool_offset)
-            for i, m in enumerate(s.mcodes):
-                # index 0 is "sequence number", just like s.gcodes[0].  Trying
-                # to set this number as a modal code caused issue #271.
-                # index 1 is the stopping code, which holds M2 after reading
-                # ahead to the end of a program.  Trying to set this number
-                # as a modal code makes the next preview disappear.
-                # (see Interp::write_m_codes)
-                if i in (0,1): continue
-                if m == -1: continue
-                initcodes.append("M%d" % m)
+        if interpname:
+            initcode = inifile.getstring("EMC", "RS274NGC_STARTUP_CODE", fallback="")
+            if initcode == "":
+                initcode = inifile.getstring("RS274NGC", "RS274NGC_STARTUP_CODE", fallback="")
+            initcodes = [initcode] if initcode else []
+        else:
+            initcodes = preview_helpers.preview_initcodes(s, inifile)
         try:
             result, seq = o.load_preview(f, canon, initcodes, interpname)
         except KeyboardInterrupt:
@@ -1660,6 +1620,7 @@ class DummyCanon:
     def set_g5x_offset(*args): pass
     def set_g92_offset(*args): pass
     def set_xy_rotation(*args): pass
+    def set_g68_frame(*args): pass
     def get_external_angular_units(self): return 1.0
     def get_external_length_units(self): return 1.0
     def set_plane(*args): pass
@@ -1847,7 +1808,7 @@ class _prompt_touchoff(_prompt_float):
         systems = all_systems[:]
         if not tool_only:
             del systems[-1]
-        linear_axis = vars.ja_rbutton.get() in "xyzuvw"
+        linear_axis = not selected_ja_is_angular()
         if linear_axis:
             if vars.metric.get(): unit_str = " " + _("mm")
             else: unit_str = " " + _("in")
@@ -1942,7 +1903,7 @@ def get_max_jog_speed(a):
     if vars.metric.get(): max_linear_speed = max_linear_speed * 25.4
 
     if vars.teleop_mode.get():
-        if a in (0,1,2,6,7,8):
+        if not axis_angular[a]:
             return max_linear_speed
         else:
             return vars.max_aspeed.get()
@@ -2089,6 +2050,12 @@ def get_states():
            ,interp_statename(s.interp_state)
            )
 #-----------------------------------------------------------
+
+abort_pulse = None
+def end_abort_pulse():
+    global abort_pulse
+    abort_pulse = None
+    comp["abort"] = False
 
 class TclCommands(nf.TclCommands):
     def next_tab(event=None):
@@ -2511,8 +2478,13 @@ class TclCommands(nf.TclCommands):
         comp["abort"] = True
         c.abort()
         c.wait_complete()
-        time.sleep(0.3)
-        comp["abort"] = False
+        # Hold axisui.abort for 0.3 s after the last press.  A sleep here
+        # froze AXIS for 0.3 s per press, so whoever pressed Esc the most,
+        # in the greatest hurry, waited the longest.
+        global abort_pulse
+        if abort_pulse is not None:
+            root_window.after_cancel(abort_pulse)
+        abort_pulse = root_window.after(300, end_abort_pulse)
 
     def mdi_up_cmd(*args):
         if args and args[0].char: return   # e.g., for KP_Up with numlock on
@@ -2884,7 +2856,7 @@ class TclCommands(nf.TclCommands):
         ensure_mode(linuxcnc.MODE_MDI)
         s.poll()
 
-        linear_axis = vars.ja_rbutton.get() in "xyzuvw"
+        linear_axis = not selected_ja_is_angular()
         if linear_axis and vars.metric.get(): scale = 1/25.4
         else: scale = 1
 
@@ -2928,7 +2900,7 @@ class TclCommands(nf.TclCommands):
         ensure_mode(linuxcnc.MODE_MDI)
         s.poll()
 
-        linear_axis = vars.ja_rbutton.get() in "xyzuvw"
+        linear_axis = not selected_ja_is_angular()
         if linear_axis and vars.metric.get(): scale = 1/25.4
         else: scale = 1
 
@@ -3363,7 +3335,7 @@ jog_cont  = [False] * linuxcnc.MAX_JOINTS
 jogging   = [0]     * linuxcnc.MAX_JOINTS
 def jog_on(a, b):
     if not manual_ok() or not manual_tab_visible() or running(): return
-    if a < 3 or a > 5:
+    if (joint_type[a] == "LINEAR") if get_jog_mode() else not axis_angular[a]:
         if vars.metric.get(): b = b / 25.4
         b = from_internal_linear_unit(b)
     if jog_after[a]:
@@ -3484,6 +3456,10 @@ for j in range(jointcount):
     section = "JOINT_%d" % j
     joint_type[j] = inifile.getstring(section, "TYPE", fallback="LINEAR")
     joint_sequence[j]  = inifile.getstring(section, "HOME_SEQUENCE", fallback="")
+
+# which axes are angles, as the interpreter reads them; axis_type below is
+# what AXIS shows for the letters it has
+axis_angular = axis_kinds.angular(inifile)
 
 axis_type = [None] * linuxcnc.MAX_AXIS
 for a in range(linuxcnc.MAX_AXIS):
@@ -3632,9 +3608,6 @@ if not inifile.hasvariable("TRAJ", "LINEAR_UNITS"):
 lu = inifile.getlinearunits("TRAJ", "LINEAR_UNITS")
 if None == lu:
     raise SystemExit("Invalid [TRAJ]LINEAR_UNITS")
-a_axis_wrapped = inifile.getbool("AXIS_A", "WRAPPED_ROTARY", fallback=False)
-b_axis_wrapped = inifile.getbool("AXIS_B", "WRAPPED_ROTARY", fallback=False)
-c_axis_wrapped = inifile.getbool("AXIS_C", "WRAPPED_ROTARY", fallback=False)
 if coordinate_display:
     if coordinate_display.lower() in ("mm", "metric"): vars.metric.set(1)
     else: vars.metric.set(0)
@@ -3656,11 +3629,7 @@ for j in range(jointcount):
          homing_order_defined = 0
          break
 
-ct = inifile.getreal('DISPLAY', 'CYCLE_TIME', fallback=.020)
-if ct < 1:
-    update_ms = int(ct * 1000)
-else:
-    update_ms = int(ct)
+update_ms = display_cycle_time(inifile)
 interpname = inifile.getstring("TASK", "INTERPRETER", fallback="")
 
 s = linuxcnc.stat();
@@ -3802,8 +3771,7 @@ for jnum in range(num_joints):
             _("Unhome %(name)s _%(id)s") % {"name":ja_name, "id":ja_id})
 
 astep_size = step_size = 1
-for a in range(linuxcnc.MAX_AXIS):
-    a = "XYZABCUVW"[a]
+for i, a in enumerate("XYZABCUVW"):
     if s.axis_mask & (1<<i) == 0: continue
     section = "AXIS_%s" % a
     unit = inifile.getlinearunits(section, "UNITS", fallback=lu) * 25.4
@@ -3816,7 +3784,7 @@ for a in range(linuxcnc.MAX_AXIS):
         if f != 0:
            step_size_tmp = min(step_size, 1. / f)
            if a in 'XYZ': step_size = astep_size = step_size_tmp
-           elif a in 'ABC': astep_size = step_size_tmp
+           elif axis_angular[i]: astep_size = step_size_tmp
            else: step_size = step_size_tmp
 
 if inifile.hasvariable("DISPLAY", "MIN_LINEAR_VELOCITY"):
@@ -3890,7 +3858,7 @@ def selected_ja_is_angular():
         return joint_type[int(ja)] == "ANGULAR"
     except ValueError:
         try:
-            return axis_type["xyzabcuvw".index(ja.lower())] == "ANGULAR"
+            return axis_angular["xyzabcuvw".index(ja.lower())]
         except (ValueError, IndexError):
             return False
 
@@ -4050,7 +4018,7 @@ def get_coordinate_font(large):
 
     if coordinate_font not in font_cache:
         font_cache[coordinate_font] = \
-            glnav.use_pango_font(coordinate_font, 0, 128)
+            glnav.use_pango_font(coordinate_font, 0, 128, scale=hidpi_factor)
     fontbase, coordinate_charwidth, coordinate_linespace = \
             font_cache[coordinate_font]
 
@@ -4206,7 +4174,11 @@ else:
 # program, the kinematics parameters of a machine whose geometry lives in
 # HAL among them, and a postgui file connects them after the panels exist
 def open_initial_file():
+    global loaded_file
     if os.path.exists(initialfile):
+        # reload, edit, properties and save need to know the file, as
+        # for a file opened through the menu
+        loaded_file = initialfile
         open_file_guts(initialfile, False, addrecent)
 
     if lathe:
@@ -4295,15 +4267,15 @@ def check_dynamic_tabs():
         if postgui_halfile is not None:
             for f in postgui_halfile:
                 if f.lower().endswith('.tcl'):
-                    res = os.spawnvp(os.P_WAIT, "haltcl", ["haltcl", "-i", vars.emcini.get(), f])
+                    res = subprocess.call(["haltcl", "-i", vars.emcini.get(), f])
                 else:
-                    res = os.spawnvp(os.P_WAIT, "halcmd", ["halcmd", "-i", vars.emcini.get(), "-f", f])
+                    res = subprocess.call(["halcmd", "-i", vars.emcini.get(), "-f", f])
                 if res: raise SystemExit(res)
 
         if postgui_halcmds is not None:
             for f in postgui_halcmds:
                 f = os.path.expanduser(f)
-                res = os.spawnvp(os.P_WAIT, "halcmd", ["halcmd"] + f.split())
+                res = subprocess.call(["halcmd"] + f.split())
                 if res: raise SystemExit(res)
 
         open_initial_file()

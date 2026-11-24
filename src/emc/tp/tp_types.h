@@ -93,6 +93,14 @@ typedef struct {
      double revs;
      int waiting_for_index;
      int waiting_for_atspeed;
+     double pending_offset; // requested angle offset in revolutions (set by tpSetSpindleSync, applied at index)
+     int angle_hold_pending; // an angle offset is still to be waited out for the
+                             // current index sync; armed when the index wait is
+                             // armed, cleared once the angle has been reached.
+                             // Scopes the hold to the first segment after the
+                             // index, so later segments of the same pass keep
+                             // the spindle offset accumulated by
+                             // tpCompleteSegment() instead of resetting it.
      int overrun_cycles;   /* cycles elapsed in the current overrun window */
      double overrun_revs;  /* spindle position when that window opened */
      int overrun_reported; /* fault already raised for this synced move */
@@ -109,6 +117,17 @@ typedef struct {
 
     EmcPose currentPos;
     EmcPose goalPos;
+    /* where the queue ends in joint space, known when the last segment
+       queued was a joint interpolated one; a world segment after it makes
+       the answer the inverse of goalPos again */
+    double queue_end_joints[EMCMOT_MAX_JOINTS];
+    int queue_end_joints_valid;
+    /* the end joints of a joint interpolated segment that completed this
+       cycle, for the servo thread to seed its inverse with: the segment is
+       gone from the queue by the time it asks */
+    double joint_end[EMCMOT_MAX_JOINTS];
+    int joint_end_valid;
+    int joint_segments_queued;       /* joint interpolated segments in the queue */
 
     int queueSize;
     double cycleTime;

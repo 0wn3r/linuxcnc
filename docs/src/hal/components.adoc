@@ -127,6 +127,7 @@ To search in the man pages, use the UNIX tool `apropos`.
 | link:../man/man9/mesa_7i65.9.html[mesa_7i65] |Mesa Electronics driver for the 7I65 eight-axis servo card. (See the man page for more information) ||
 | link:../man/man9/mesa_pktgyro_test.9.html[mesa_pktgyro_test] |PktUART simple test with Microstrain 3DM-GX3-15 gyro ||
 | link:../man/man9/mesa_uart.9.html[mesa_uart] |An example component demonstrating how to access the Hostmot2 UART ||
+| link:../man/man9/opto_ac5.9.html[opto_ac5] |Realtime driver for opto22 PCI-AC5 cards ||
 | link:../man/man9/serport.9.html[serport] |Hardware driver for the digital I/O bits of the 8250 and 16550 serial port ||
 | link:../man/man9/setsserial.9.html[setsserial] |An utility for setting Smart Serial NVRAM parameters ||
 | link:../man/man9/sserial.9.html[sserial] |hostmot2 - Smart Serial LinuxCNC HAL driver for the Mesa Electronics HostMot2 Smart-Serial remote cards ||
@@ -230,7 +231,7 @@ To search in the man pages, use the UNIX tool `apropos`.
 | link:../man/man9/deadzone.9.html[deadzone] |Returns the center if within the threshold. ||
 | link:../man/man9/div2.9.html[div2]         |Quotient of two floating point inputs. ||
 | link:../man/man9/hypot.9.html[hypot]       |Three-input hypotenuse (Euclidean distance) calculator. ||
-| link:../man/man9/ilowpass.9.html[ilowpass] |Low-pass filter with integer inputs and outputs ||
+| link:../man/man9/ilowpass.9.html[ilowpass] |Low-pass filter with integer inputs and outputs (deprecated, see jog-accel-fraction) ||
 | link:../man/man9/integ.9.html[integ]       |Integrator ||
 | link:../man/man9/invert.9.html[invert]     |Computes the inverse of the input signal. ||
 | link:../man/man9/filter_kalman.9.html[filter_kalman] |Unidimensional Kalman filter, also known as linear quadratic estimation (LQE) ||
@@ -316,6 +317,7 @@ Limit its slew rate to less than maxv per second. Limit its second derivative to
 | link:../man/man9/rosekins.9.html[rosekins] |Kinematics for a rose engine ||
 | link:../man/man9/rotatekins.9.html[rotatekins] |The X and Y axes are rotated 45 degrees compared to the joints 0 and 1. ||
 | link:../man/man9/scarakins.9.html[scarakins] |Kinematics for SCARA-type robots. ||
+| link:../man/man9/switchkinscomp.9.html[switchkinscomp] |Switchable kinematics module template ||
 | link:../man/man9/kins.9.html[three21kins] |Analytical kinematics solver for 6-DOF arm + wrist robots. ||
 | link:../man/man9/tripodkins.9.html[tripodkins] |The joints represent the distance of the controlled point from three predefined locations (the motors), giving three degrees of freedom in position (XYZ). ||
 | link:../man/man9/userkins.9.html[userkins] |Template for user-built kinematics ||
@@ -434,6 +436,7 @@ include::components_gen.adoc[]
 * hal_comp_by_name(3)
 * hal_create_thread(3)
 * hal_del_funct_from_thread(3)
+* hal_del_init_funct_from_thread(3)
 * hal_exit(3)
 * hal_export_funct(3)
 * hal_export_functf(3)

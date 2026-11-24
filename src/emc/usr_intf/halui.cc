@@ -16,6 +16,7 @@
 * Last change:
 ********************************************************************/
 
+#include "logutil.hh"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -26,22 +27,21 @@
 
 #include <hal.h>		/* access to HAL functions/definitions */
 #include <rtapi.h>		/* rtapi_print_msg */
-#include "libnml/rcs/rcs.hh"
+#include <rcs_status.hh>
 #include <posemath.h>		// PM_POSE, TO_RAD
-#include "nml_intf/emc.hh"		// EMC NML
-#include "nml_intf/emc_nml.hh"
-#include "nml_intf/emcglb.h"		// EMC_NMLFILE, TRAJ_MAX_VELOCITY, etc.
-#include "nml_intf/emccfg.h"		// DEFAULT_TRAJ_MAX_VELOCITY
+#include <nml_intf/emc.hh>		// EMC NML
+#include <nml_intf/emc_nml.hh>
+#include <nml_intf/emcglb.h>		// EMC_NMLFILE, TRAJ_MAX_VELOCITY, etc.
+#include <nml_intf/emccfg.h>		// DEFAULT_TRAJ_MAX_VELOCITY
 #include <inifile.hh>
-#include "libnml/rcs/rcs_print.hh"
-#include "libnml/nml/nml_oi.hh"
-#include "libnml/os_intf/timer.hh"
+#include <libnml/nml/nml_oi.hh>
+#include "timeutil.hh"
 #include <rtapi_string.h>
-#include "tooldata/tooldata.hh"
 #include "mapini.hh"
 #include "unitenum.hh"
 
 using namespace linuxcnc;
+using namespace std::chrono_literals;
 
 /* Using halui: see the man page */
 
@@ -322,10 +322,10 @@ static int emcErrorNmlGet()
 
 static int tryNml()
 {
-    double end;
+    std::chrono::seconds end;
     int good;
-#define RETRY_TIME 10.0		// seconds to wait for subsystems to come up
-#define RETRY_INTERVAL 1.0	// seconds between wait tries for a subsystem
+constexpr auto RETRY_TIME = 10s;     // wait for subsystems to come up
+constexpr auto RETRY_INTERVAL = 1s;  // between wait tries for a subsystem
 
     end = RETRY_TIME;
     good = 0;
@@ -336,7 +336,7 @@ static int tryNml()
         }
         esleep(RETRY_INTERVAL);
         end -= RETRY_INTERVAL;
-    } while (end > 0.0);
+    } while (end > 0s);
 
     if (!good) {
         return -1;
@@ -351,7 +351,7 @@ static int tryNml()
         }
         esleep(RETRY_INTERVAL);
         end -= RETRY_INTERVAL;
-    } while (end > 0.0);
+    } while (end > 0s);
 
     if (!good) {
         return -1;
@@ -359,8 +359,6 @@ static int tryNml()
 
     return 0;
 
-#undef RETRY_TIME
-#undef RETRY_INTERVAL
 }
 
 static int updateStatus()
@@ -398,12 +396,12 @@ static int updateStatus()
 }
 
 
-#define EMC_COMMAND_DELAY   0.1	// how long to sleep between checks
+constexpr auto EMC_COMMAND_DELAY = 100ms;  // how long to sleep between checks
 
 static int emcCommandWaitDone()
 {
-    double end;
-    for (end = 0.0; end < doneTimeout; end += EMC_COMMAND_DELAY) {
+    for (auto end = 0ms; end < std::chrono::duration<double>(doneTimeout);
+	 end += EMC_COMMAND_DELAY) {
 	updateStatus();
 	int serial_diff = emcStatus->echo_serial_number - emcCommandSerialNumber;
 
@@ -439,8 +437,8 @@ static int emcCommandSend(RCS_CMD_MSG & cmd)
     emcCommandSerialNumber = cmd.serial_number;
 
     // wait for receive
-    double end;
-    for (end = 0.0; end < receiveTimeout; end += EMC_COMMAND_DELAY) {
+    for (auto end = 0ms; end < std::chrono::duration<double>(receiveTimeout);
+	 end += EMC_COMMAND_DELAY) {
 	updateStatus();
 	int serial_diff = emcStatus->echo_serial_number - emcCommandSerialNumber;
 
@@ -1219,39 +1217,14 @@ static int iniLoad(const char *filename)
     // EMC debugging flags
     emc_debug = (unsigned)inifile.findUIntV("DEBUG", "EMC", 0);
 
-    // set output for RCS messages
-    if (auto inival = mapRcsDestination(inifile, "RCS_DEBUG_DEST", "EMC")) {
-        set_rcs_print_destination(*inival);
-    } else {
-        set_rcs_print_destination(RCS_PRINT_TO_STDOUT);
-    }
-
-    // NML/RCS debugging flags
-    set_rcs_print_flag(PRINT_RCS_ERRORS);  // only print errors by default
-    // enable all debug messages by default if RCS or NML debugging is enabled
-    if ((emc_debug & EMC_DEBUG_RCS) || (emc_debug & EMC_DEBUG_NML)) {
-        // output all RCS debug messages
-        set_rcs_print_flag(PRINT_EVERYTHING);
-    }
-
-    // set flags if RCS_DEBUG in ini file
-    if (auto inival = inifile.findUInt("RCS_DEBUG", "EMC")) {
-        // clear all flags
-        clear_rcs_print_flag(PRINT_EVERYTHING);
-        // set parsed flags
-        set_rcs_print_flag((long)*inival);
-    }
-    // output infinite RCS errors by default
-    max_rcs_errors_to_print = inifile.findIntV("RCS_MAX_ERR", "EMC", -1);
-
     if (emc_debug & EMC_DEBUG_CONFIG) {
         std::string version = inifile.findStringV("VERSION", "EMC", "<unknown>");
         std::string machine = inifile.findStringV("MACHINE", "EMC", "<unknown>");
         extern char *program_invocation_short_name;
-        rcs_print(
-            "%s (%d) halui: machine '%s'  version '%s'\n",
-            program_invocation_short_name, getpid(), machine.c_str(), version.c_str()
-        );
+        log_info(
+            "{} ({}) halui: machine '{}'  version '{}'\n",
+            program_invocation_short_name, getpid(), machine, version
+            );
     }
 
     if (auto inistring = inifile.findString("NML_FILE", "EMC")) {
@@ -1265,8 +1238,7 @@ static int iniLoad(const char *filename)
         }
     }
 
-    if(!inifile.isSet("MAX_LINEAR_VELOCITY", "TRAJ") && !inifile.isSet("MAX_VELOCITY", "AXIS_X"))
-        maxMaxVelocity = 1.0;
+    maxMaxVelocity = inifile.findRealV("MAX_LINEAR_VELOCITY", "TRAJ", inifile.findRealV("MAX_VELOCITY", "AXIS_X", 1.0));
 
     if (auto inival = inifile.findReal("MIN_SPINDLE_OVERRIDE", "DISPLAY")) {
         if (*inival > 0.0) {
@@ -1294,7 +1266,7 @@ static int iniLoad(const char *filename)
         }
     }
     if (num_axes ==0) {
-        rcs_print("halui: no [TRAJ]COORDINATES specified, enabling all axes\n");
+        log_info("halui: no [TRAJ]COORDINATES specified, enabling all axes\n");
         num_axes = EMCMOT_MAX_AXIS;
         axis_mask = (1 << EMCMOT_MAX_AXIS) - 1;
     }
@@ -1964,9 +1936,9 @@ static void modify_hal_pins()
 		if (halui_sent_mdi) { // we have an ongoing MDI command
 			if (mdi_finished) { //which seems to have finished
 			halui_sent_mdi = 0;
-			esleep(0.02); //sleep for a while
+			esleep(20ms); //sleep for a while
 			updateStatus();
-			esleep(0.02); //sleep for a while
+			esleep(20ms); //sleep for a while
 			}
 		}
 		hal_set_bool(halui_data->halui_mdi_is_running, halui_sent_mdi);
@@ -1995,24 +1967,14 @@ static void modify_hal_pins()
     hal_set_real(halui_data->tool_length_offset_v, emcStatus->task.toolOffset.v);
     hal_set_real(halui_data->tool_length_offset_w, emcStatus->task.toolOffset.w);
 
-    if (emcStatus->io.tool.toolInSpindle == 0) {
-        hal_set_real(halui_data->tool_diameter, 0.0);
+    // the loaded tool's entry comes with the status
+    const CANON_TOOL_TABLE &loaded = emcStatus->io.tool.toolTableCurrent;
+    if (emcStatus->io.tool.toolInSpindle != 0
+        && loaded.toolno == emcStatus->io.tool.toolInSpindle) {
+        hal_set_real(halui_data->tool_diameter, loaded.diameter);
     } else {
-        int idx;
-        for (idx = 0; idx <= tooldata_last_index_get(); idx ++) { // note <=
-            CANON_TOOL_TABLE tdata;
-            if (tooldata_get(&tdata,idx) != IDX_OK) {
-                fprintf(stderr,"UNEXPECTED idx %s %d\n",__FILE__,__LINE__);
-            }
-            if (tdata.toolno == emcStatus->io.tool.toolInSpindle) {
-                hal_set_real(halui_data->tool_diameter, tdata.diameter);
-                break;
-            }
-        }
-        if (idx == CANON_POCKETS_MAX) {
-            // didn't find the tool
-            hal_set_real(halui_data->tool_diameter, 0.0);
-        }
+        // no tool, or the tool is not in the tool table
+        hal_set_real(halui_data->tool_diameter, 0.0);
     }
 
     for (spindle = 0; spindle < num_spindles; spindle++){
@@ -2033,28 +1995,45 @@ static void modify_hal_pins()
 	hal_set_bool(halui_data->joint_has_fault[joint], emcStatus->motion.joint[joint].fault);
     }
 
+    // the relative position: the offset chain taken off in reverse, the
+    // tool offset, G5x, the XY rotation, G92 and the tilted work plane
+    double rx = emcStatus->motion.traj.actualPosition.tran.x - emcStatus->task.g5x_offset.tran.x - emcStatus->task.toolOffset.tran.x;
+    double ry = emcStatus->motion.traj.actualPosition.tran.y - emcStatus->task.g5x_offset.tran.y - emcStatus->task.toolOffset.tran.y;
+    double rz = emcStatus->motion.traj.actualPosition.tran.z - emcStatus->task.g5x_offset.tran.z - emcStatus->task.toolOffset.tran.z;
+    {
+      double t = -emcStatus->task.rotation_xy * TO_RAD;
+      double x = rx * cos(t) - ry * sin(t);
+      double y = ry * cos(t) + rx * sin(t);
+      rx = x - emcStatus->task.g92_offset.tran.x;
+      ry = y - emcStatus->task.g92_offset.tran.y;
+      rz -= emcStatus->task.g92_offset.tran.z;
+    }
+    if (emcStatus->task.g68_active) {
+      const double *r = emcStatus->task.g68_rotation;
+      double x = rx - emcStatus->task.g68_offset.tran.x;
+      double y = ry - emcStatus->task.g68_offset.tran.y;
+      double z = rz - emcStatus->task.g68_offset.tran.z;
+      rx = r[0]*x + r[3]*y + r[6]*z;
+      ry = r[1]*x + r[4]*y + r[7]*z;
+      rz = r[2]*x + r[5]*y + r[8]*z;
+    }
+
     if (axis_mask & 0x0001) {
       hal_set_real(halui_data->axis_pos_commanded[0], emcStatus->motion.traj.position.tran.x);
       hal_set_real(halui_data->axis_pos_feedback[0], emcStatus->motion.traj.actualPosition.tran.x);
-      double x = emcStatus->motion.traj.actualPosition.tran.x - emcStatus->task.g5x_offset.tran.x - emcStatus->task.toolOffset.tran.x;
-      double y = emcStatus->motion.traj.actualPosition.tran.y - emcStatus->task.g5x_offset.tran.y - emcStatus->task.toolOffset.tran.y;
-      x = x * cos(-emcStatus->task.rotation_xy * TO_RAD) - y * sin(-emcStatus->task.rotation_xy * TO_RAD);
-      hal_set_real(halui_data->axis_pos_relative[0], x - emcStatus->task.g92_offset.tran.x);
+      hal_set_real(halui_data->axis_pos_relative[0], rx);
     }
 
     if (axis_mask & 0x0002) {
       hal_set_real(halui_data->axis_pos_commanded[1], emcStatus->motion.traj.position.tran.y);
       hal_set_real(halui_data->axis_pos_feedback[1], emcStatus->motion.traj.actualPosition.tran.y);
-      double x = emcStatus->motion.traj.actualPosition.tran.x - emcStatus->task.g5x_offset.tran.x - emcStatus->task.toolOffset.tran.x;
-      double y = emcStatus->motion.traj.actualPosition.tran.y - emcStatus->task.g5x_offset.tran.y - emcStatus->task.toolOffset.tran.y;
-      y = y * cos(-emcStatus->task.rotation_xy * TO_RAD) + x * sin(-emcStatus->task.rotation_xy * TO_RAD);
-      hal_set_real(halui_data->axis_pos_relative[1], y - emcStatus->task.g92_offset.tran.y);
+      hal_set_real(halui_data->axis_pos_relative[1], ry);
     }
 
     if (axis_mask & 0x0004) {
       hal_set_real(halui_data->axis_pos_commanded[2], emcStatus->motion.traj.position.tran.z);
       hal_set_real(halui_data->axis_pos_feedback[2], emcStatus->motion.traj.actualPosition.tran.z);
-      hal_set_real(halui_data->axis_pos_relative[2], emcStatus->motion.traj.actualPosition.tran.z - emcStatus->task.g5x_offset.tran.z - emcStatus->task.g92_offset.tran.z - emcStatus->task.toolOffset.tran.z);
+      hal_set_real(halui_data->axis_pos_relative[2], rz);
     }
 
     if (axis_mask & 0x0008) {
@@ -2110,19 +2089,19 @@ int main(int argc, char *argv[])
 {
     // process command line args
     if (0 != emcGetArgs(argc, argv)) {
-	rcs_print_error("error in argument list\n");
+	log_error("error in argument list\n");
 	exit(1);
     }
 
     // get configuration information
     if (0 != iniLoad(emc_inifile)) {
-	rcs_print_error("iniLoad error\n");
+	log_error("iniLoad error\n");
 	exit(2);
     }
 
     //init HAL and export pins
     if (0 != halui_hal_init()) {
-	rcs_print_error("hal_init error\n");
+	log_error("hal_init error\n");
 	exit(1);
     }
 
@@ -2131,17 +2110,10 @@ int main(int argc, char *argv[])
 
     // init NML
     if (0 != tryNml()) {
-	rcs_print_error("can't connect to emc\n");
+	log_error("can't connect to emc\n");
 	thisQuit();
 	exit(1);
     }
-
-#ifdef TOOL_NML //{
-    //fprintf(stderr,"%8d HALUI REGISTER %p\n",getpid(),
-    tool_nml_register((CANON_TOOL_TABLE*)&emcStatus->io.tool.toolTable);
-#else //}{
-    tool_mmap_user();
-#endif //}
 
     // get current serial number, and save it for restoring when we quit
     // so as not to interfere with real operator interface
@@ -2165,7 +2137,7 @@ int main(int argc, char *argv[])
         }
         check_hal_changes(); //if anything changed send NML messages
         modify_hal_pins(); //if status changed modify HAL too
-        esleep(0.02); //sleep for a while
+        esleep(20ms); //sleep for a while
         updateStatus();
     }
     thisQuit();

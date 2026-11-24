@@ -368,7 +368,7 @@ With the `@` option, you can avoid rewriting them to refer to local named parame
   otherwise the code fails with an appropriate error message.
 
 `n`::
-  The `n` (greater-than) character specifies to pass the current line number in the `n`local named parameter.
+  The `n` character specifies to pass the current line number in the `n`local named parameter.
 
 By default, parameters are passed  as local named parameter to an NGC procedure.
 These local parameters appear as 'already set' when the procedure starts executing, which is different from existing semantics
@@ -696,11 +696,13 @@ REMAP=M6   modalgroup=6  prolog=change_prolog ngc=change epilog=change_epilog
 
 So the prolog covering steps 1 and 2 would look like so -
 we decide to pass a few variables to the remap procedure which can be inspected and changed there, or used in a message.
-Those are: `tool_in_spindle`, `selected_tool` (tool numbers) and their respective tooldata indices `current_pocket` and `selected_pocket`:
+Those are: `tool_in_spindle`, `selected_tool` (tool numbers) and their respective pockets `current_pocket` and `selected_pocket`:
 
 [NOTE]
-The legacy names *selected_pocket* and *current_pocket* actually reference a sequential tooldata index for tool items loaded from a tool table
-([EMCIO]TOOL_TABLE) or via a tooldata database ([EMCIO]DB_PROGRAM).
+*selected_pocket* and *current_pocket* are the pocket numbers the tool table ([EMCIO]TOOL_TABLE) or tooldata database ([EMCIO]DB_PROGRAM) gives the tools,
+the same values as `#<_selected_pocket>` and `#<_current_pocket>`.
+Assigning one takes a pocket number too; the interpreter finds the tool in that pocket, preferring the selected tool and then the tool in the spindle where several tools share a pocket.
+A pocket of -1 means no tool is selected, or none is loaded from a pocket. On a nonrandom toolchanger, a selected pocket of 0 is `T0`.
 
 [source,python]
 ----
@@ -752,9 +754,9 @@ def change_epilog(self, **words):
         if self.return_value > 0.0:
             # commit change
             self.selected_pocket =  int(self.params["selected_pocket"])
-            emccanon.CHANGE_TOOL(self.selected_pocket)
+            emccanon.CHANGE_TOOL()
             # cause a sync()
-            self.tool_change_flag = True
+            self.toolchange_flag = True
             self.set_tool_parameters()
             return INTERP_OK
         else:
@@ -875,12 +877,11 @@ def prepare_prolog(self,**words):
             return "T requires a tool number"
 
         tool  = cblock.t_number
-        if tool:
-            (status, pocket) = self.find_tool_pocket(tool)
-            if status != INTERP_OK:
-                return "T%d: pocket not found" % (tool)
-        else:
-            pocket = -1 # this is a T0 - tool unload
+        # T0 too: pocket 0 (tool unload) on a nonrandom toolchanger,
+        # a tool like any other on a random one
+        (status, pocket) = self.find_tool_pocket(tool)
+        if status != INTERP_OK:
+            return "T%d: pocket not found" % (tool)
 
         # these variables will be visible in the ngc O-word sub
         # as #<tool> and #<pocket> local variables, and can be
@@ -1619,7 +1620,8 @@ Then, the following parameters are exported to the NGC procedure:
 
 - `#<tool_in_spindle>` : the tool number of the currently loaded tool
 - `#<selected_tool>` : the tool number selected
-- `#<selected_pocket>` : the selected tool's tooldata index
+- `#<current_pocket>` : the pocket the loaded tool came from
+- `#<selected_pocket>` : the selected tool's pocket
 
 .Actions of +change_epilog
 
@@ -1628,7 +1630,7 @@ Then, the following parameters are exported to the NGC procedure:
   This can be used for instance to minimally adjust the built in behavior be preceding or following it with some other statements.
 * Otherwise, the `#<selected_pocket>` parameter is extracted from the subroutine's parameter space, and used to set the interpreter's `current_pocket` variable.
   Again, the procedure could change this value, and the epilog takes the changed value in account.
-* Then, the Canon command `CHANGE_TOOL(#<selected_pocket>)` is executed.
+* Then, the Canon command `CHANGE_TOOL()` is executed.
 * The new tool parameters (offsets, diameter etc) are set.
 
 [[remap:cycle-stdglue]]
@@ -1829,8 +1831,8 @@ All the listed G-codes are already defined in the current implementation of Linu
 |#  |Gxx |Gxx.1 |Gxx.2 |Gxx.3 |Gxx.4 |Gxx.5 |Gxx.6 |Gxx.7 |Gxx.8 |Gxx.9
 |10 |G10 |      |      |      |      |      |      |      |      | 
 |11 |    |      |      |      |      |      |      |      |      | 
-|12 |    |      |      |      |      |      |      |      |      | 
-|13 |    |      |      |      |      |      |      |      |      | 
+|12 |    |G12.1 |      |      |      |      |      |      |      |
+|13 |    |G13.1 |      |      |      |      |      |      |      |
 |14 |    |      |      |      |      |      |      |      |      | 
 |15 |    |      |      |      |      |      |      |      |      | 
 |16 |    |      |      |      |      |      |      |      |      | 
@@ -1851,7 +1853,7 @@ All the listed G-codes are already defined in the current implementation of Linu
 |25 |    |      |      |      |      |      |      |      |      | 
 |26 |    |      |      |      |      |      |      |      |      | 
 |27 |    |      |      |      |      |      |      |      |      | 
-|28 |G28 |G28.1 |G28.2 |      |      |      |      |      |      |
+|28 |G28 |G28.1 |G28.2 |      |      |G28.5 |      |      |      |
 |29 |    |      |      |      |      |      |      |      |      | 
 |===
 
@@ -1859,10 +1861,10 @@ All the listed G-codes are already defined in the current implementation of Linu
 [width="90%",align="center",options="header,strong,unbreakable",cols="1*2^em,10*1<m"]
 |===
 |#  |Gxx |Gxx.1 |Gxx.2 |Gxx.3 |Gxx.4 |Gxx.5 |Gxx.6 |Gxx.7 |Gxx.8 |Gxx.9
-|30 |G30 |G30.1 |      |      |      |      |      |      |      | 
+|30 |G30 |G30.1 |      |      |      |G30.5 |      |      |      |
 |31 |    |      |      |      |      |      |      |      |      | 
 |32 |    |      |      |      |      |      |      |      |      | 
-|33 |G30 |G30.1 |      |      |      |      |      |      |      | 
+|33 |G33 |G33.1 |      |      |      |      |      |      |      |
 |34 |    |      |      |      |      |      |      |      |      | 
 |35 |    |      |      |      |      |      |      |      |      | 
 |36 |    |      |      |      |      |      |      |      |      | 
@@ -1878,7 +1880,7 @@ All the listed G-codes are already defined in the current implementation of Linu
 |40 |G40 |      |      |      |      |      |      |      |      | 
 |41 |G41 |G41.1 |      |      |      |      |      |      |      | 
 |42 |G42 |G42.1 |      |      |      |      |      |      |      | 
-|43 |G43 |G43.1 |      |      |      |      |      |      |      | 
+|43 |G43 |G43.1 |G43.2 |      |G43.4 |G43.5 |      |      |      |
 |44 |    |      |      |      |      |      |      |      |      | 
 |45 |    |      |      |      |      |      |      |      |      | 
 |46 |    |      |      |      |      |      |      |      |      | 
@@ -1894,7 +1896,7 @@ All the listed G-codes are already defined in the current implementation of Linu
 |50 |    |     |     |     |     |     |     |     |     | 
 |51 |    |     |     |     |     |     |     |     |     | 
 |52 |    |     |     |     |     |     |     |     |     | 
-|53 |G53 |     |     |     |     |     |     |     |     | 
+|53 |G53 |G53.1|G53.2|G53.3|G53.4|G53.5|G53.6|G53.7|     |
 |54 |G54 |     |     |     |     |     |     |     |     | 
 |55 |G55 |     |     |     |     |     |     |     |     | 
 |56 |G56 |     |     |     |     |     |     |     |     | 
@@ -1915,8 +1917,8 @@ All the listed G-codes are already defined in the current implementation of Linu
 |65 |    |      |      |      |      |      |      |      |      | 
 |66 |    |      |      |      |      |      |      |      |      | 
 |67 |    |      |      |      |      |      |      |      |      | 
-|68 |    |      |      |      |      |      |      |      |      | 
-|69 |    |      |      |      |      |      |      |      |      | 
+|68 |    |      |G68.2 |G68.3 |G68.4 |      |      |      |      |
+|69 |G69 |      |      |      |      |      |      |      |      |
 |===
 
 .Table of Allocated G-codes 70-79

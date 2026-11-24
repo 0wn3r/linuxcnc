@@ -232,6 +232,70 @@ link:../man/man1/mesambccc.1.html[mesambccc(1)]. The 2.9 release retains
 the framework, so its documentation remains available in the
 http://linuxcnc.org/docs/2.9/html/drivers/mesa_modbus.html[2.9 docs].
 
+External offsets: the *axis._L_.eoffset-counts* input is now a float
+(real) pin instead of an integer (sint) one, so a computed offset can
+be sent without rounding it to whole counts. The pins that feed it
+changed with it:
+
+* *eoffset_per_angle.N.kcounts*
+* *plasmac.x-offset-counts*, *plasmac.y-offset-counts* and
+  *plasmac.z-offset-counts*
+* *z_level_compensation.counts*
+* the QtDragon, QtDragon_hd and Woodpecker screen pins
+  *eoffset-count*, *eoffset-spindle-count* and *eoffset-zlevel-count*
+
+The stock configurations are updated. HAL does not connect an integer
+signal to a float pin, so a configuration that feeds one of these pins
+from an integer source, or connects one of them to an integer input,
+fails to load with an error such as `Signal 'eoffset_count' of type
+'sint' cannot add pin 'axis.z.eoffset-counts' of type 'real'`. Put a
+link:../man/man9/conv_sint_real.9.html[conv_sint_real] component
+between an integer source and the float pin, or a
+link:../man/man9/conv_real_sint.9.html[conv_real_sint] component
+between a float output and an integer input.
+
+Python remaps: on a nonrandom toolchanger, *self.current_pocket* and
+*self.selected_pocket* used to give a tool's position in the tool
+table. They now give its pocket number (the P word of the tool table),
+the same as *#<_current_pocket>* and *#<_selected_pocket>*, and assigning
+them takes a pocket number. Random toolchangers are unaffected.
+Assigning a pocket number that no tool in the tool table has raises a
+Python *ValueError*, so a remap that still assigns a tool table position
+fails instead of silently selecting another tool; -1 (none) and, for
+*T0*, 0 are always accepted.
+A nonrandom tool table may put several tools in one pocket (all in
+pocket 0 on a manual toolchanger, for example). A remap that assigns both
+should assign *self.current_tool* or *self.selected_tool* before the
+pocket, so that the pocket resolves to that tool and not to the first
+tool in that pocket.
+
+On a nonrandom toolchanger *#<_selected_pocket>* (and
+*self.selected_pocket*) is now 0 after *T0*, as
+*iocontrol.0.tool-prep-pocket* is; it was -1.
+
+The preview now starts with the tool the machine has prepared, so
+*#<_selected_pocket>* reads the same there as in a run, and an M6 with
+no tool prepared is the same error in both. A preview canon that does
+not derive from *rs274.interpret.StatMixin* gets this by defining
+*get_external_selected_tool_slot()*, returning *stat.pocket_prepped*;
+without it nothing is prepared (-1).
+
+*emccanon.CHANGE_TOOL_NUMBER()* (what M61 does) now takes the tool
+number, as in M61 Q__n__, instead of a tooldata index. A remap that
+passed it *self.current_pocket* must pass *self.current_tool* (or the
+M61 Q number) instead, as the stdglue M61 remap now does. Copies of
+stdglue.py in a configuration should be updated from
+*nc_files/remap_lib/python-stdglue/stdglue.py*; the old M61 remap
+loaded the wrong tool when a tool's pocket differed from its position
+in the tool table.
+
+The *iocontrol.0.tool-prep-index* pin has been removed. It carried the
+position of the prepared tool in LinuxCNC's internal copy of the tool
+table, which on a non-random toolchanger has no meaning outside
+LinuxCNC. Use *iocontrol.0.tool-prep-number* (the tool number) or
+*iocontrol.0.tool-prep-pocket* (its pocket) instead. A HAL file that
+still connects the pin fails to load.
+
 
 == Preview renderer now requires OpenGL 3.3 core
 

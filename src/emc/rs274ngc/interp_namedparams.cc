@@ -59,6 +59,13 @@ enum predefined_named_parameters {
     NP_LINE,
     NP_MOTION_MODE,
     NP_KINS_TYPE,
+    NP_ORIENT_VALID,
+    NP_ORIENT_X,
+    NP_ORIENT_Y,
+    NP_ORIENT_Z,
+    NP_ORIENT_A,
+    NP_ORIENT_B,
+    NP_ORIENT_C,
     NP_PLANE,
     NP_CCOMP,
     NP_METRIC,
@@ -184,8 +191,10 @@ int Interp::read_named_parameter(
     } else {
         // do not require named parameters to be defined during a 
         // subroutine definition:
-        if (_setup.defining_sub)
+        if (_setup.defining_sub) {
+            *double_ptr = 0.0;
             return INTERP_OK;
+        }
 
 	logNP("%s: referencing undefined named parameter '%s' level=%d",
 	      name, paramNameBuf, (paramNameBuf[0] == '_') ? 0 : _setup.call_level);
@@ -544,6 +553,22 @@ int Interp::lookup_named_param(const char *nameBuf,
 	*value = _setup.kins_type;
 	break;
 
+    case NP_ORIENT_VALID: // _orient_valid: G53.2 has solved a pose
+	*value = _setup.orient_valid;
+	break;
+
+    case NP_ORIENT_X: // _orient_x and kin: the pose G53.2 last solved
+    case NP_ORIENT_Y:
+    case NP_ORIENT_Z:
+    case NP_ORIENT_A:
+    case NP_ORIENT_B:
+    case NP_ORIENT_C:
+	if (!_setup.orient_valid) {
+	    ERS(_("no G53.2 has solved an orientation yet"));
+	}
+	*value = _setup.orient_pose[cmd - NP_ORIENT_X];
+	break;
+
     case NP_PLANE: // _plane
 	switch(_setup.plane) {
 	case CANON_PLANE::XY:
@@ -689,30 +714,11 @@ int Interp::lookup_named_param(const char *nameBuf,
 	break;
 
     case NP_SELECTED_POCKET:
-    if(_setup.random_toolchanger){//random changers already report the real pocket number
-        *value = _setup.selected_pocket;
-    }
-    else{//non random get it from the tool table
-        if(_setup.tool_table[_setup.selected_pocket].pocketno == 0){//pocket 0 is special on non-random changers
-            *value = -1;
-        }
-        else{
-	        *value = _setup.tool_table[_setup.selected_pocket].pocketno;
-        }
-    }
+	*value = pocket_number(_setup.selected_pocket, true);
 	break;
 
     case NP_CURRENT_POCKET:
-    if (_setup.current_pocket == -1) {
-	    *value = -1;
-	    break;
-    }
-    if(_setup.random_toolchanger){//random changers already report the real pocket number
-	    *value = _setup.current_pocket;
-    }
-    else{//non random get it from the tool table
-        *value = _setup.tool_table[_setup.current_pocket].pocketno;
-    }
+	*value = pocket_number(_setup.current_pocket, false);
 	break;
 
     case NP_SELECTED_TOOL:
@@ -763,26 +769,27 @@ int Interp::lookup_named_param(const char *nameBuf,
 
     case NP_ABS_X:  // abs position
         {
-            double x = _setup.current_x + _setup.axis_offset_x;
-            double y = _setup.current_y + _setup.axis_offset_y;
-            rotate(&x, &y, _setup.rotation_xy);
-	    *value = x + _setup.origin_offset_x + _setup.tool_offset.tran.x;
+            double abs_pos[9];
+            get_abs_position(&_setup, abs_pos);
+            *value = abs_pos[0];
         }
 	break;
 
     case NP_ABS_Y:  // abs position
         {
-            double x = _setup.current_x + _setup.axis_offset_x;
-            double y = _setup.current_y + _setup.axis_offset_y;
-            rotate(&x, &y, _setup.rotation_xy);
-	    *value = y + _setup.origin_offset_y + _setup.tool_offset.tran.y;
+            double abs_pos[9];
+            get_abs_position(&_setup, abs_pos);
+            *value = abs_pos[1];
         }
 	break;
 
 
     case NP_ABS_Z:  // abs position
-	*value = _setup.current_z + _setup.axis_offset_z +
-                 _setup.origin_offset_z + _setup.tool_offset.tran.z;
+        {
+            double abs_pos[9];
+            get_abs_position(&_setup, abs_pos);
+            *value = abs_pos[2];
+        }
 	break;
 
     case NP_ABS_A:  // abs position
@@ -919,6 +926,15 @@ int Interp::init_named_parameters()
 
   // kinematics selected by G12.1 P- / G13.1, 0 when none has been selected
   init_readonly_param("_kins_type", NP_KINS_TYPE, PA_USE_LOOKUP);
+
+  // the pose G53.2 last solved: 1.0 once one has been, and its words
+  init_readonly_param("_orient_valid", NP_ORIENT_VALID, PA_USE_LOOKUP);
+  init_readonly_param("_orient_x", NP_ORIENT_X, PA_USE_LOOKUP);
+  init_readonly_param("_orient_y", NP_ORIENT_Y, PA_USE_LOOKUP);
+  init_readonly_param("_orient_z", NP_ORIENT_Z, PA_USE_LOOKUP);
+  init_readonly_param("_orient_a", NP_ORIENT_A, PA_USE_LOOKUP);
+  init_readonly_param("_orient_b", NP_ORIENT_B, PA_USE_LOOKUP);
+  init_readonly_param("_orient_c", NP_ORIENT_C, PA_USE_LOOKUP);
 
   // G17/18/19/17.1/18.1/19.1 -> return 170/180/190/171/181/191
   init_readonly_param("_plane", NP_PLANE, PA_USE_LOOKUP);

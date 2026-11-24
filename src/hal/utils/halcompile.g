@@ -227,9 +227,9 @@ def type2type(type_):
         repl = typemap[type_]
         if repl.endswith("32"):
             nt = repl[:-2] + "nt"
-            Warn(f"Old type '{type_}' was replaced by '{repl}', but you should be upgrading to '{nt}'.")
+            Warn(f"Old type '{type_}' was replaced by '{repl}', but you should be upgrading to '{nt}'. halcompupdate(1) converts a .comp.")
         else:
-            Warn(f"Old type '{type_}' has been replaced by '{repl}'")
+            Warn(f"Old type '{type_}' has been replaced by '{repl}'. halcompupdate(1) converts a .comp.")
         return typemap[type_]
     return type_
 
@@ -275,8 +275,8 @@ def claim(seen, what, hal_names, pos=None):
                   "indistinguishable." % (seen[hal_name], what, shown), pos=pos)
         seen[hal_name] = what
 
-# hal_export_funct() also creates <funct>.time, .tmax and .tmax-increased in
-# the pin and param namespace, but only for a realtime component, and
+# hal_export_funct() also creates <funct>.time, .tmax and .tmax-increased as
+# pins (one namespace with params), but only for a realtime component, and
 # 'option userspace' may follow the function.  So these wait for the last rule
 # of the grammar, where the whole file has been seen and an Error() is still
 # reported the way every other one is.
@@ -575,6 +575,19 @@ static int comp_id;
             print("        \"%%s%s\", prefix);" % to_hal("." + name), file=f)
             print("    if(r != 0) return r;", file=f)
         if personality:
+            # Masked param: keep the accessor handle valid by allocating a
+            # fake param, so reads return zero instead of dereferencing NULL.
+            print("} else {", file=f)
+            if array:
+                if isinstance(array, tuple): flim = array[0]
+                else: flim = array
+                print("    for(j=0; j < (%s); j++) {" % flim, file=f)
+                print("        r = hal_param_new_fake(comp_id, (hal_refs_u *)&(inst->%s_p[j]));" % to_c(name), file=f)
+                print("        if(r != 0) return r;", file=f)
+                print("    }", file=f)
+            else:
+                print("    r = hal_param_new_fake(comp_id, (hal_refs_u *)&(inst->%s_p));" % to_c(name), file=f)
+                print("    if(r != 0) return r;", file=f)
             print("}", file=f)
 
     for type_, name, array, value in variables:
@@ -1182,7 +1195,7 @@ def document(filename, outfilebase):
         if array:
             sz = name.count("#")
             if isinstance(array, tuple):
-                print(" (%s=%0*d..%s)" % ("M" * sz, sz, 0, array[1]), end=' ', file=f)
+                print(" (%s=%0*d..(%s)-1)" % ("M" * sz, sz, 0, array[1]), end=' ', file=f)
             else:
                 print(" (%s=%0*d..%0*d)" % ("M" * sz, sz, 0, sz, array-1), end=' ', file=f)
         if personality:
@@ -1205,7 +1218,7 @@ def document(filename, outfilebase):
             if array:
                 sz = name.count("#")
                 if isinstance(array, tuple):
-                    print(" (%s=%0*d..%s)" % ("M" * sz, sz, 0, array[1]), end=' ', file=f)
+                    print(" (%s=%0*d..(%s)-1)" % ("M" * sz, sz, 0, array[1]), end=' ', file=f)
                 else:
                     print(" (%s=%0*d..%0*d)" % ("M" * sz, sz, 0, sz, array-1), end=' ', file=f)
             if personality:

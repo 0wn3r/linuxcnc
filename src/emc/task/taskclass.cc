@@ -13,18 +13,18 @@
 * Last change:
 ********************************************************************/
 
+#include "logutil.hh"
 #include <math.h>		// fabs()
 #include <float.h>		// DBL_MAX
 #include <string.h>		// memcpy() strncpy()
 #include <stdlib.h>		// malloc()
 #include <sys/wait.h>
+#include <libintl.h>		// gettext()
 
-#include "libnml/rcs/rcs.hh"		// RCS_CMD_CHANNEL, etc.
-#include "libnml/rcs/rcs_print.hh"
-#include "libnml/os_intf/timer.hh"             // esleep, etc.
-#include "nml_intf/emcglb.h"		// EMC_INIFILE
+#include <rcs_status.hh>		// enum class RCS_STATUS
 
-#include "pythonplugin/python_plugin.hh"
+#include <nml_intf/emcglb.h>		// EMC_INIFILE
+
 #include "taskclass.hh"
 
 using namespace linuxcnc;
@@ -54,11 +54,10 @@ int Task::iocontrol_hal_init(void)
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->user_request_enable, 0, IOC0".user-request-enable"));
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->coolant_mist,     0, IOC0".coolant-mist"));
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->coolant_flood,    0, IOC0".coolant-flood"));
-    CHK(hal_pin_new_si32(comp_id, HAL_OUT, &iocontrol_data->tool_prep_pocket, 0, IOC0".tool-prep-pocket"));
-    CHK(hal_pin_new_si32(comp_id, HAL_OUT, &iocontrol_data->tool_from_pocket, 0, IOC0".tool-from-pocket"));
-    CHK(hal_pin_new_si32(comp_id, HAL_OUT, &iocontrol_data->tool_prep_index,  0, IOC0".tool-prep-index"));
-    CHK(hal_pin_new_si32(comp_id, HAL_OUT, &iocontrol_data->tool_prep_number, 0, IOC0".tool-prep-number"));
-    CHK(hal_pin_new_si32(comp_id, HAL_OUT, &iocontrol_data->tool_number,      0, IOC0".tool-number"));
+    CHK(hal_pin_new_sint(comp_id, HAL_OUT, &iocontrol_data->tool_prep_pocket, 0, IOC0".tool-prep-pocket"));
+    CHK(hal_pin_new_sint(comp_id, HAL_OUT, &iocontrol_data->tool_from_pocket, 0, IOC0".tool-from-pocket"));
+    CHK(hal_pin_new_sint(comp_id, HAL_OUT, &iocontrol_data->tool_prep_number, 0, IOC0".tool-prep-number"));
+    CHK(hal_pin_new_sint(comp_id, HAL_OUT, &iocontrol_data->tool_number,      0, IOC0".tool-number"));
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->tool_prepare,     0, IOC0".tool-prepare"));
     CHK(hal_pin_new_bool(comp_id, HAL_IN,  &iocontrol_data->tool_prepared,    0, IOC0".tool-prepared"));
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->tool_change,      0, IOC0".tool-change"));
@@ -87,12 +86,11 @@ void Task::hal_init_pins(void)
     hal_set_bool(iocontrol_data->coolant_mist, 0);       /* coolant mist output pin */
     hal_set_bool(iocontrol_data->coolant_flood, 0);      /* coolant flood output pin */
     hal_set_bool(iocontrol_data->tool_prepare, 0);       /* output, pin that notifies HAL it needs to prepare a tool */
-    hal_set_si32(iocontrol_data->tool_prep_number, 0);   /* output, pin that holds the tool number to be prepared, only valid when tool-prepare=TRUE */
-    hal_set_si32(iocontrol_data->tool_prep_pocket, 0);   /* output, pin that holds the pocketno for the tool to be prepared, only valid when tool-prepare=TRUE */
-    hal_set_si32(iocontrol_data->tool_from_pocket, 0);   /* output, always 0 at startup */
-    hal_set_si32(iocontrol_data->tool_prep_index, 0);    /* output, pin that holds the internal index (idx) of the tool to be prepared, for debug */
+    hal_set_sint(iocontrol_data->tool_prep_number, 0);   /* output, pin that holds the tool number to be prepared, only valid when tool-prepare=TRUE */
+    hal_set_sint(iocontrol_data->tool_prep_pocket, 0);   /* output, pin that holds the pocketno for the tool to be prepared, only valid when tool-prepare=TRUE */
+    hal_set_sint(iocontrol_data->tool_from_pocket, 0);   /* output, always 0 at startup */
     hal_set_bool(iocontrol_data->tool_change, 0);        /* output, notifies a tool-change should happen (emc should be in the tool-change position) */
-    hal_set_si32(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle);
+    hal_set_sint(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle);
 }
 
 Task *task_methods;
@@ -112,13 +110,12 @@ int emcCoolantFloodOn() { return task_methods->emcCoolantFloodOn(); }
 int emcCoolantFloodOff() { return task_methods->emcCoolantFloodOff(); }
 int emcToolPrepare(int tool) { return task_methods->emcToolPrepare(tool); }
 int emcToolLoad() { return task_methods->emcToolLoad(); }
-int emcToolUnload()  { return task_methods->emcToolUnload(); }
 int emcToolLoadToolTable(const char *file) { return task_methods->emcToolLoadToolTable(file); }
 int emcToolSetOffset(int pocket, int toolno, const EmcPose& offset, double diameter,
                      double frontangle, double backangle, int orientation) {
     return task_methods->emcToolSetOffset( pocket,  toolno,  offset,  diameter,
 					   frontangle,  backangle,  orientation); }
-int emcToolSetNumber(int number) { return task_methods->emcToolSetNumber(number); }
+int emcToolSetNumber(int toolno) { return task_methods->emcToolSetNumber(toolno); }
 
 int emcTaskOnce(const char * /*filename*/, EMC_IO_STAT &emcioStatus)
 {
@@ -132,16 +129,6 @@ int emcTaskOnce(const char * /*filename*/, EMC_IO_STAT &emcioStatus)
     }
     return 0;
 }
-
-
-extern "C" PyObject* PyInit_interpreter(void);
-extern "C" PyObject* PyInit_emccanon(void);
-struct _inittab builtin_modules[] = {
-    { "interpreter", PyInit_interpreter },
-    { "emccanon", PyInit_emccanon },
-    // any others...
-    { NULL, NULL }
-};
 
 Task::Task(EMC_IO_STAT & emcioStatus_in) :
     emcioStatus(emcioStatus_in),
@@ -196,7 +183,7 @@ Task::Task(EMC_IO_STAT & emcioStatus_in) :
     tooldata_init(random_toolchanger);
     if (db_mode == tooldb_t::DB_ACTIVE) {
         if (0 != tooldata_db_init(db_program, random_toolchanger)) {
-            rcs_print_error("can't initialize DB_PROGRAM.\n");
+            log_error("can't initialize DB_PROGRAM.\n");
             db_mode = tooldb_t::DB_NOTUSED;
             tooldata_set_db(db_mode);
         }
@@ -215,7 +202,7 @@ Task::Task(EMC_IO_STAT & emcioStatus_in) :
     }
 
     if (0 != tooldata_load(tooltable_filename)) {
-        rcs_print_error("can't load tool table.\n");
+        log_error("can't load tool table.\n");
     }
 
     if (random_toolchanger) {
@@ -226,11 +213,14 @@ Task::Task(EMC_IO_STAT & emcioStatus_in) :
         emcioStatus.tool.toolInSpindle = tdata.toolno;
     } else {
         emcioStatus.tool.toolInSpindle = 0;
-    }    
+    }
+    update_current_tool();
 };
 
-
-Task::~Task() {};
+Task::~Task() {
+    if(comp_id >= 0)
+        hal_exit(comp_id);
+}
 
 // set the have_tool_change_position global
 static int readToolChange(const IniFile &toolInifile)
@@ -280,7 +270,7 @@ static int readToolChange(const IniFile &toolInifile)
 	    retval = 0;
 	} else {
 	    /* bad format */
-	    rcs_print("bad format for TOOL_CHANGE_POSITION\n");
+	    log_info("bad format for TOOL_CHANGE_POSITION\n");
 	    have_tool_change_position = 0;
 	    retval = -1;
 	}
@@ -357,7 +347,18 @@ void Task::load_tool(int idx) {
         if (tooldata_get(&temp,0) != IDX_OK) { UNEXPECTED_MSG; }
         if (tooldata_db_notify(SPINDLE_LOAD,temp.toolno,0,temp)) { UNEXPECTED_MSG; }
     }
+    update_current_tool();
 } // load_tool()
+
+// Status carries the spindle's tool table entry. Call this after anything
+// that may have changed it: a tool change, a changed offset, and a reloaded
+// tool table, which clears the entry without loading a tool again when the
+// loaded tool is no longer in the table.
+void Task::update_current_tool() {
+    if (tooldata_get(&emcioStatus.tool.toolTableCurrent,0) != IDX_OK) {
+        UNEXPECTED_MSG;
+    }
+}
 
 void Task::reload_tool_number(int toolno) {
     CANON_TOOL_TABLE tdata;
@@ -379,6 +380,7 @@ int Task::emcIoInit()//EMC_TOOL_INIT
 {
     tooldata_load(tooltable_filename);
     reload_tool_number(emcioStatus.tool.toolInSpindle);
+    update_current_tool();
 
     if (0 != iniTool(emc_inifile)) {
 	return -1;
@@ -467,29 +469,29 @@ int Task::emcToolPrepare(int toolno)
         }
         rtapi_print_msg(RTAPI_MSG_DBG, "EMC_TOOL_PREPARE tool=%d idx=%d\n", toolno, idx);
 
-        hal_set_si32(iocontrol_data->tool_prep_index, idx); // any type of changer
+        prep_index = idx; // any type of changer
 
         // Note: some of the following logic could be simplified
         //       but is maintained to preserve runtests expectations
-        // Set HAL pins for tool number, pocket, and index.
+        // Set HAL pins for tool number and pocket.
         if (random_toolchanger) {
             // RANDOM_TOOLCHANGER
-            hal_set_si32(iocontrol_data->tool_prep_number, tdata.toolno);
+            hal_set_sint(iocontrol_data->tool_prep_number, tdata.toolno);
             if (idx == 0) {
                 emcioStatus.tool.pocketPrepped      = 0; // pocketPrepped is an idx
-                hal_set_si32(iocontrol_data->tool_prep_pocket, 0);
+                hal_set_sint(iocontrol_data->tool_prep_pocket, 0);
                 return 0;
             }
-            hal_set_si32(iocontrol_data->tool_prep_pocket, tdata.pocketno);
+            hal_set_sint(iocontrol_data->tool_prep_pocket, tdata.pocketno);
         } else {
             // NON_RANDOM_TOOLCHANGER
             if (idx == 0) {
                 emcioStatus.tool.pocketPrepped      = 0; // pocketPrepped is an idx
-                hal_set_si32(iocontrol_data->tool_prep_number, 0);
-                hal_set_si32(iocontrol_data->tool_prep_pocket, 0);
+                hal_set_sint(iocontrol_data->tool_prep_number, 0);
+                hal_set_sint(iocontrol_data->tool_prep_pocket, 0);
             } else {
-                hal_set_si32(iocontrol_data->tool_prep_number, tdata.toolno);
-                hal_set_si32(iocontrol_data->tool_prep_pocket, tdata.pocketno);
+                hal_set_sint(iocontrol_data->tool_prep_number, tdata.toolno);
+                hal_set_sint(iocontrol_data->tool_prep_pocket, tdata.pocketno);
             }
         }
         // it doesn't make sense to prep the spindle pocket
@@ -539,17 +541,12 @@ int Task::emcToolLoad()//EMC_TOOL_LOAD_TYPE
     return 0;
 }
 
-int Task::emcToolUnload()//EMC_TOOL_UNLOAD_TYPE
-{
-    emcioStatus.tool.toolInSpindle = 0;
-    return 0;
-}
-
 int Task::emcToolLoadToolTable(const char *file)//EMC_TOOL_LOAD_TOOL_TABLE_TYPE
 {
     if(!strlen(file)) file = tooltable_filename;//use filename from ini if none is provided
     tooldata_load(file);
     reload_tool_number(emcioStatus.tool.toolInSpindle);
+    update_current_tool();
     return 0;
 }
 
@@ -583,6 +580,7 @@ int Task::emcToolSetOffset(int idx, int toolno, const EmcPose& offset, double di
     if (tooldata_put(tdata,idx) != IDX_OK) {
         UNEXPECTED_MSG;
     }
+    update_current_tool();
     if (0 != tooldata_save(tooltable_filename)) {
         emcioStatus.status = RCS_STATUS::ERROR;
     }
@@ -599,14 +597,16 @@ int Task::emcToolSetOffset(int idx, int toolno, const EmcPose& offset, double di
     return 0;
 }
 
-int Task::emcToolSetNumber(int number)//EMC_TOOL_SET_NUMBER
+int Task::emcToolSetNumber(int toolno)//EMC_TOOL_SET_NUMBER
 {
-    int idx;
-
-    idx = number;//TODO: should be toolno
+    // M61 Q0 on a non-random changer unloads: index 0, the spindle. The
+    // mmap tooldata lookup knows that, the TOOL_NML one does not.
+    int idx = (!random_toolchanger && toolno == 0)
+              ? 0 : tooldata_find_index_for_tool(toolno);
     CANON_TOOL_TABLE tdata;
-    if (tooldata_get(&tdata,idx) != IDX_OK) {
-        UNEXPECTED_MSG;
+    if (idx < 0 || tooldata_get(&tdata,idx) != IDX_OK) {
+        emcOperatorError(gettext("M61: tool %d not in the tool table"), toolno);
+        return -1;
     }
     load_tool(idx);
 
@@ -614,14 +614,14 @@ int Task::emcToolSetNumber(int number)//EMC_TOOL_SET_NUMBER
     if (tooldata_get(&tdata,idx) != IDX_OK) {
         UNEXPECTED_MSG;
     }
-    emcioStatus.tool.toolInSpindle = tdata.toolno;
     rtapi_print_msg(RTAPI_MSG_DBG,
-            "EMC_TOOL_SET_NUMBER old_loaded_tool=%d new_idx_number=%d new_tool=%d\n"
-            , emcioStatus.tool.toolInSpindle, idx, tdata.toolno);
+            "EMC_TOOL_SET_NUMBER old_loaded_tool=%d new_tool=%d\n"
+            , emcioStatus.tool.toolInSpindle, tdata.toolno);
+    emcioStatus.tool.toolInSpindle = tdata.toolno;
     //likewise in HAL
-    hal_set_si32(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle);
+    hal_set_sint(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle);
     if (emcioStatus.tool.toolInSpindle == 0) {
-        emcioStatus.tool.toolFromPocket = hal_set_si32(iocontrol_data->tool_from_pocket, 0); // no tool in spindle
+        emcioStatus.tool.toolFromPocket = hal_set_sint(iocontrol_data->tool_from_pocket, 0); // no tool in spindle
     }
 
     return 0;
@@ -644,7 +644,7 @@ int Task::emcToolSetNumber(int number)//EMC_TOOL_SET_NUMBER
 int Task::read_tool_inputs(void)
 {
     if (hal_get_bool(iocontrol_data->tool_prepare) && hal_get_bool(iocontrol_data->tool_prepared)) {
-        emcioStatus.tool.pocketPrepped = hal_get_si32(iocontrol_data->tool_prep_index); //check if tool has been (idx) prepared
+        emcioStatus.tool.pocketPrepped = prep_index; //check if tool has been (idx) prepared
         hal_set_bool(iocontrol_data->tool_prepare, 0);
         emcioStatus.status = RCS_STATUS::DONE;  // we finally finished to do tool-changing, signal task with RCS_DONE
         return 10; //prepped finished
@@ -653,7 +653,7 @@ int Task::read_tool_inputs(void)
     if (hal_get_bool(iocontrol_data->tool_change) && hal_get_bool(iocontrol_data->tool_changed)) {
         if(!random_toolchanger && emcioStatus.tool.pocketPrepped == 0) {
             emcioStatus.tool.toolInSpindle = 0;
-            emcioStatus.tool.toolFromPocket = hal_set_si32(iocontrol_data->tool_from_pocket, 0);
+            emcioStatus.tool.toolFromPocket = hal_set_sint(iocontrol_data->tool_from_pocket, 0);
         } else {
             // the tool now in the spindle is the one that was prepared
             CANON_TOOL_TABLE tdata;
@@ -661,17 +661,17 @@ int Task::read_tool_inputs(void)
                 UNEXPECTED_MSG; return -1;
             }
             emcioStatus.tool.toolInSpindle = tdata.toolno;
-            emcioStatus.tool.toolFromPocket = hal_set_si32(iocontrol_data->tool_from_pocket, tdata.pocketno);
+            emcioStatus.tool.toolFromPocket = hal_set_sint(iocontrol_data->tool_from_pocket, tdata.pocketno);
         }
         if (emcioStatus.tool.toolInSpindle == 0) {
-             emcioStatus.tool.toolFromPocket = hal_set_si32(iocontrol_data->tool_from_pocket, 0);
+             emcioStatus.tool.toolFromPocket = hal_set_sint(iocontrol_data->tool_from_pocket, 0);
         }
-        hal_set_si32(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle); //likewise in HAL
+        hal_set_sint(iocontrol_data->tool_number, emcioStatus.tool.toolInSpindle); //likewise in HAL
         load_tool(emcioStatus.tool.pocketPrepped);
         emcioStatus.tool.pocketPrepped = -1; //reset the tool preped number, -1 to permit tool 0 to be loaded
-        hal_set_si32(iocontrol_data->tool_prep_number, 0); //likewise in HAL
-        hal_set_si32(iocontrol_data->tool_prep_pocket, 0); //likewise in HAL
-        hal_set_si32(iocontrol_data->tool_prep_index, 0); //likewise in HAL
+        hal_set_sint(iocontrol_data->tool_prep_number, 0); //likewise in HAL
+        hal_set_sint(iocontrol_data->tool_prep_pocket, 0); //likewise in HAL
+        prep_index = 0;
         hal_set_bool(iocontrol_data->tool_change, 0); //also reset the tool change signal
         emcioStatus.status = RCS_STATUS::DONE;        // we finally finished to do tool-changing, signal task with RCS_DONE
         return 11; //change finished

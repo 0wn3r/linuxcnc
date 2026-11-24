@@ -18,7 +18,7 @@
 #ifndef TASKCLASS_HH
 #define TASKCLASS_HH
 
-#include "nml_intf/emc.hh"
+#include <nml_intf/emc.hh>
 #include <inifile.hh>
 #include <hal.h>
 #include "tooldata/tooldata.hh"
@@ -39,7 +39,6 @@ struct iocontrol_str {
     hal_sint_t tool_prep_pocket; /* output, pin that holds the pocketno for the tool table entry matching the tool to
                                             be prepared, only valid when tool-prepare=TRUE */
     hal_sint_t tool_from_pocket; /* output, pin indicating pocket current load tool retrieved from*/
-    hal_sint_t tool_prep_index;  /* output, pin for internal index (idx) of prepped tool above */
     hal_sint_t tool_prep_number; /* output, pin that holds the tool number to be prepared, only valid when tool-prepare=TRUE */
     hal_sint_t tool_number;      /* output, pin that holds the tool number currently in the spindle */
     hal_bool_t tool_prepared;    /* input, pin that notifies that the tool has been prepared */
@@ -72,12 +71,12 @@ public:
     virtual int emcToolPrepare(int tool);
     virtual int emcToolLoad();
     virtual int emcToolLoadToolTable(const char *file);
-    virtual int emcToolUnload();
-    virtual int emcToolSetNumber(int number);
+    virtual int emcToolSetNumber(int toolno);
 
     int iocontrol_hal_init(void);
     void reload_tool_number(int toolno);
     void load_tool(int idx);
+    void update_current_tool();
     void run();
     int read_tool_inputs(void);
     void hal_init_pins(void);
@@ -91,6 +90,7 @@ public:
     char db_program[LINELEN] {};
     tooldb_t db_mode {tooldb_t::DB_NOTUSED};
     int tool_status;
+    int prep_index {0};  // tooldata index of the tool being prepared
 };
 
 extern Task *task_methods;

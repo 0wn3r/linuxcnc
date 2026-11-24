@@ -15,8 +15,8 @@
 * Last change:
 ********************************************************************/
 
-#include "emc.hh"
-#include "emc_nml.hh"
+#include <nml_intf/emc.hh>
+#include <nml_intf/emc_nml.hh>
 
 // EMC_STAT is written to the emcStatus NML buffer every cycle.  If it outgrows
 // that buffer, NML::write() rejects the message and status silently stops
@@ -127,6 +127,7 @@ EMC_MOTION_STAT::EMC_MOTION_STAT()
     numExtraJoints(0),
     jogging_active(0),
     homing_active(false),
+    homing_runs(0),
     heartbeat(0)
 {
 }
@@ -152,6 +153,9 @@ EMC_TASK_STAT::EMC_TASK_STAT()
     g5x_index(0),
     g92_offset{},
     rotation_xy(0.0),
+    g68_offset{},
+    g68_rotation{1, 0, 0, 0, 1, 0, 0, 0, 1},
+    g68_active(0),
     toolOffset{},
     activeSettings{},
     programUnits(CANON_UNITS_MM),
@@ -172,10 +176,8 @@ EMC_TOOL_STAT::EMC_TOOL_STAT()
   : EMC_TOOL_STAT_MSG(EMC_TOOL_STAT_TYPE, sizeof(EMC_TOOL_STAT)),
     pocketPrepped(0), // idx
     toolInSpindle(0), // toolno
-    toolFromPocket(0) // tool_from_pocket
-#ifndef TOOL_NML // {
-    , toolTableCurrent CANON_TOOL_TABLE_INIT
-#endif
+    toolFromPocket(0), // tool_from_pocket
+    toolTableCurrent CANON_TOOL_TABLE_INIT
 {
 #ifdef TOOL_NML //{
     const struct CANON_TOOL_TABLE tdata = CANON_TOOL_TABLE_INIT;

@@ -63,6 +63,7 @@ import atexit              # needed to register child's to be closed on closing 
 import subprocess          # to launch onboard and other processes
 import tempfile            # needed only if the user click new in edit mode to open a new empty file
 import linuxcnc            # to get our own error system
+import axis_kinds
 import locale              # for setting the language of the GUI
 import gettext             # to extract the strings to be translated
 from collections import OrderedDict # needed for proper jog button arrangement
@@ -165,6 +166,15 @@ ALERT_ICON = "dialog_warning"
 INFO_ICON = "dialog_information"
 
 AXISLIST = ['offset', 'X', 'Y', 'Z', 'A', 'B', 'C', 'U', 'V', 'W', 'Rot', 'name']
+
+def set_label(label, text):
+    """Set a label's text only if it changed.
+
+    GTK relayouts the whole window on every set_label(), even for the same
+    text, which costs a lot of CPU when done every cycle.
+    """
+    if label.get_label() != text:
+        label.set_label(text)
 
 class gmoccapy(object):
     def __init__(self, argv):
@@ -551,7 +561,8 @@ class gmoccapy(object):
         # CYCLE_TIME = time, in milliseconds, that display will sleep between polls
         cycle_time = self.get_ini_info.get_cycle_time()
         GLib.timeout_add( cycle_time, self._periodic )  # time between calls to the function, in milliseconds
-        GLib.timeout_add(1000, self._periodic_1s)       # 1 s timer for elapsed time display
+        GLib.timeout_add(1000, self._periodic_1s)       # 1 s timer for elapsed time and clock display
+        self._update_clock()
         self.elapsed_time_run = 0
         self.progress = 0
 
@@ -623,6 +634,8 @@ class gmoccapy(object):
         self.get_ini_info = getiniinfo.GetIniInfo()
         # get the axis list from INI
         self.axis_list = self.get_ini_info.get_axis_list()
+        # which axes are angles, as [AXIS_<letter>] TYPE says
+        self.axis_angular = axis_kinds.angular(self.get_ini_info.inifile)
         # get the joint axis relation from INI
         self.joint_axis_dic, self.double_axis_letter = self.get_ini_info.get_joint_axis_relation()
         # if it's a lathe config, set the tool editor style
@@ -1243,17 +1256,21 @@ class gmoccapy(object):
         if shift:
             # There are no keyboard shortcuts to home angular axis, but
             # we implement the possibility for future options
-            if button_name[0] in "abc":
+            if self._jog_is_angular(button_name):
                 value = self.widgets.spc_ang_jog_vel.get_property("max") / 60
             else:
                 value = self.jog_rate_max
         else:
-            if button_name[0] in "abc":
+            if self._jog_is_angular(button_name):
                 value = self.widgets.spc_ang_jog_vel.get_value() / 60
             else:
                 value = self.widgets.spc_lin_jog_vel.get_value() / 60
 
-        velocity = value * (1 / self.faktor)
+        # an angle is degrees whatever the display units
+        if self._jog_is_angular(button_name):
+            velocity = value
+        else:
+            velocity = value * (1 / self.faktor)
 
         if button_name[1] == "+":
             dir = 1
@@ -1269,6 +1286,13 @@ class gmoccapy(object):
             self.command.jog(linuxcnc.JOG_INCREMENT, JOGMODE, joint_no_or_axis_index, dir * velocity, distance)
         else:  # continuous jogging
             self.command.jog(linuxcnc.JOG_CONTINUOUS, JOGMODE, joint_no_or_axis_index, dir * velocity)
+
+    # an axis letter by [AXIS_<letter>] TYPE, a joint number by [JOINT_n] TYPE
+    def _jog_is_angular(self, button_name):
+        ja = button_name[0]
+        if ja in "xyzabcuvw":
+            return self.axis_angular["xyzabcuvw".index(ja)]
+        return self.get_ini_info.inifile.find("JOINT_%s" % ja, "TYPE") == "ANGULAR"
 
     def _on_btn_jog_released(self, widget, button_name, shift=False):
         LOG.debug("Jog Button released = {0}".format(button_name))
@@ -1833,7 +1857,7 @@ class gmoccapy(object):
         self.widgets.adj_dro_size.set_value(self.dro_size)
 
         # hide the angular jog vel if no angular joint is used
-        if not "a" in self.axis_list and not "b" in self.axis_list and not "c" in self.axis_list:
+        if not any(self.axis_angular["xyzabcuvw".index(axis)] for axis in self.axis_list):
             self.widgets.spc_ang_jog_vel.hide()
         else:
             self.widgets.spc_ang_jog_vel.set_property("min", self.get_ini_info.get_min_ang_jog_vel())
@@ -2801,18 +2825,20 @@ class gmoccapy(object):
         self._update_halui_pin()
         self._update_vc()
 
-        self.widgets.lbl_time.set_label(strftime("%H:%M:%S") + "\n" + strftime("%d.%m.%Y"))
-
         # keep the timer running
         return True
 
     # every 1 second this gets called
     def _periodic_1s(self):
+        self._update_clock()
         if self.GSTAT.is_auto_running() and not self.GSTAT.is_auto_paused():
             self.elapsed_time_run += 1
             self._update_progress()
         return True
 
+
+    def _update_clock(self):
+        self.widgets.lbl_time.set_label(strftime("%H:%M:%S") + "\n" + strftime("%d.%m.%Y"))
 
     def _show_error(self, error):
         kind, text = error
@@ -3923,7 +3949,7 @@ class gmoccapy(object):
         # self.stat.program_units will return 1 for inch, 2 for mm and 3 for cm
         real_feed = float(self.stat.settings[1] * self.stat.feedrate)
         if self.stat.program_units != 1:
-            self.widgets.lbl_current_vel.set_text("{0:d}".format(int(self.stat.current_vel * 60.0 * self.faktor)))
+            set_label(self.widgets.lbl_current_vel, "{0:d}".format(int(self.stat.current_vel * 60.0 * self.faktor)))
             if "G95" in self.active_gcodes:
                 feed_str = "{0:d}".format(int(self.stat.settings[1]))
                 real_feed_str = "F  {0:.2f}".format(real_feed)
@@ -3931,7 +3957,7 @@ class gmoccapy(object):
                 feed_str = "{0:d}".format(int(self.stat.settings[1]))
                 real_feed_str = "F  {0:d}".format(int(real_feed))
         else:
-            self.widgets.lbl_current_vel.set_text("{0:.2f}".format(self.stat.current_vel * 60.0 * self.faktor))
+            set_label(self.widgets.lbl_current_vel, "{0:.2f}".format(self.stat.current_vel * 60.0 * self.faktor))
             if "G95" in self.active_gcodes:
                 feed_str = "{0:.4f}".format(self.stat.settings[1])
                 real_feed_str = "F {0:.4f}".format(real_feed)
@@ -3944,8 +3970,8 @@ class gmoccapy(object):
         if not real_feed:
             real_feed_str = "F  0"
 
-        self.widgets.lbl_active_feed.set_label(feed_str)
-        self.widgets.lbl_feed_act.set_text(real_feed_str)
+        set_label(self.widgets.lbl_active_feed, feed_str)
+        set_label(self.widgets.lbl_feed_act, real_feed_str)
 
     def _update_coolant(self):
         if self.stat.flood:
@@ -4492,18 +4518,18 @@ class gmoccapy(object):
             return
 
         # set the S label in active code frame
-        self.widgets.active_speed_label.set_label("{0:.0f}".format(self.stat.settings[2]))
+        set_label(self.widgets.active_speed_label, "{0:.0f}".format(self.stat.settings[2]))
 
         # set the 'Spindle [rpm]' label
         #Note: self.stat.spindle[0]['speed'] does not reflect 'spindle.0.speed-out' pins when using G96 mode (issue #3449)
         speed = hal.get_value("spindle.0.speed-out")
         # catch very large values eg when using G96 w/o D value
         if speed > self.max_spindle_disp:
-            self.widgets.lbl_spindle_act.set_text(">"+str(self.max_spindle_disp))
+            set_label(self.widgets.lbl_spindle_act, ">"+str(self.max_spindle_disp))
         elif speed < -self.max_spindle_disp:
-            self.widgets.lbl_spindle_act.set_text("<"+str(self.max_spindle_disp))
+            set_label(self.widgets.lbl_spindle_act, "<"+str(self.max_spindle_disp))
         else:
-            self.widgets.lbl_spindle_act.set_text("{0}".format(int(round(speed))))
+            set_label(self.widgets.lbl_spindle_act, "{0}".format(int(round(speed))))
 
     def _update_vc(self):
         #Note: self.stat.spindle[0]['speed'] does not reflect 'spindle.0.speed-out' pins when using G96 mode (issue #3449)
@@ -4523,7 +4549,7 @@ class gmoccapy(object):
             text = "Vc= {0:2.1f}".format(vc)
         else:
             text = "Vc= {0:.2f}".format(vc)
-        self.widgets.lbl_vc.set_text(text)
+        set_label(self.widgets.lbl_vc, text)
         
     def on_program_time(self, widget, estimate):
         """The parse's time estimate for the program just loaded.
@@ -4634,13 +4660,13 @@ class gmoccapy(object):
             rpm_out = rpm / self.stat.spindle[0]['override']
         except:
             rpm_out = 0
-        self.widgets.lbl_spindle_act.set_label("{0}".format(int(rpm)))
+        set_label(self.widgets.lbl_spindle_act, "{0}".format(int(rpm)))
 
         if command == "stop":
             # documentation of self.command.spindle()
             # linuxcnc.spindle(direction, speed, spindle=0)
             self.command.spindle(0)
-            self.widgets.lbl_spindle_act.set_label("0")
+            set_label(self.widgets.lbl_spindle_act, "0")
         elif command == "forward":
             self.command.spindle(1, rpm_out)
         elif command == "reverse":
@@ -4888,7 +4914,7 @@ class gmoccapy(object):
                 if not result: # user says no, he want to save
                     return
             # check if offset values for current tool have been changed
-            tt = self.stat.tool_table[0]
+            tt = self.stat.loaded_tool
             new_offset = (tt.xoffset, tt.yoffset, tt.zoffset,
                           tt.aoffset, tt.boffset, tt.coffset,
                           tt.uoffset, tt.voffset, tt.woffset)
@@ -6664,9 +6690,9 @@ if __name__ == "__main__":
     if postgui_halfile is not None:
         for f in postgui_halfile:
             if f.lower().endswith('.tcl'):
-                res = os.spawnvp(os.P_WAIT, "haltcl", ["haltcl", "-i", inifile, f])
+                res = subprocess.call(["haltcl", "-i", inifile, f])
             else:
-                res = os.spawnvp(os.P_WAIT, "halcmd", ["halcmd", "-i", inifile, "-f", f])
+                res = subprocess.call(["halcmd", "-i", inifile, "-f", f])
                 if res:
                     LOG.error('postgui halfile error:{}'.format(res))
                     raise SystemExit(res)
@@ -6676,7 +6702,7 @@ if __name__ == "__main__":
         if postgui_halcmds is not None:
             for f in postgui_halcmds:
                 f = os.path.expanduser(f)
-                res = os.spawnvp(os.P_WAIT, "halcmd", ["halcmd"] + f.split())
+                res = subprocess.call(["halcmd"] + f.split())
                 if res:
                     LOG.error('postgui command error:{}'.format(res))
                     raise SystemExit(res)
@@ -6702,6 +6728,13 @@ if __name__ == "__main__":
             sys.exit(0)
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
+
+    # The startup handler's SystemExit is lost where Python ignores
+    # exceptions, such as in an os.fork() hook.
+    # The flag still says that a SIGTERM came.
+    if _terminate_requested:
+        LOG.info("gmoccapy received SIGTERM during startup, shutting down")
+        sys.exit(0)
 
     # start the event loop
     Gtk.main()

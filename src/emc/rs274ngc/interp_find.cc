@@ -190,31 +190,14 @@ int Interp::find_ends(block_pointer block,       //!< pointer to a block of RS27
 #endif
         CHKS((block->radius_flag || block->theta_flag), _("Cannot use polar coordinates with G53"));
 
-        double cx = s->current_x + s->axis_offset_x;
-        double cy = s->current_y + s->axis_offset_y;
-        rotate(&cx, &cy, s->rotation_xy);
-
-        if(block->x_flag) {
-            *px = block->x_number - s->origin_offset_x - s->tool_offset.tran.x;
-        } else {
-            *px = cx;
-        }
-
-        if(block->y_flag) {
-            *py = block->y_number - s->origin_offset_y - s->tool_offset.tran.y;
-        } else {
-            *py = cy;
-        }
-
-        rotate(px, py, -s->rotation_xy);
-        *px -= s->axis_offset_x;
-        *py -= s->axis_offset_y;
-
-        if(block->z_flag) {
-            *pz = block->z_number - s->origin_offset_z - s->axis_offset_z - s->tool_offset.tran.z;
-        } else {
-            *pz = s->current_z;
-        }
+        // the words are absolute; the current point supplies the rest,
+        // taken to the absolute frame and back with them
+        double wx, wy, wz;
+        program_to_world_xyz(s, s->current_x, s->current_y, s->current_z, &wx, &wy, &wz);
+        if(block->x_flag) { wx = block->x_number; }
+        if(block->y_flag) { wy = block->y_number; }
+        if(block->z_flag) { wz = block->z_number; }
+        world_to_program_xyz(s, wx, wy, wz, px, py, pz);
 
         if(block->a_flag) {
             if(s->axis_wrapped[AXIS_A]) {
@@ -526,12 +509,7 @@ int Interp::find_relative(double x1,     //!< absolute x position
                           double *w_2,
                           setup_pointer settings)        //!< pointer to machine settings
 {
-  *x2 = x1 - settings->origin_offset_x -  settings->tool_offset.tran.x;
-  *y2 = y1 - settings->origin_offset_y -  settings->tool_offset.tran.y;
-  rotate(x2, y2, -settings->rotation_xy);
-  *x2 -= settings->axis_offset_x;
-  *y2 -= settings->axis_offset_y;
-  *z2 = z1 - settings->origin_offset_z - settings->axis_offset_z - settings->tool_offset.tran.z;
+  world_to_program_xyz(settings, x1, y1, z1, x2, y2, z2);
 
   if(settings->axis_wrapped[AXIS_A]) {
       CHP(unwrap_rotary(AA_2, AA_1,
@@ -883,17 +861,82 @@ int Interp::find_tool_index(setup_pointer settings, int toolno, int *index)
     return INTERP_OK;
 }
 
+/*
+  The pocket number the tool table gives the tool at tooldata index `index`,
+  for #<_current_pocket>, #<_selected_pocket> and Python's current_pocket and
+  selected_pocket.
+
+  A random changer's index is its pocket. A non-random changer's tooldata is
+  sequential, so the pocket comes from the tool's P word. Its index 0 is the
+  spindle: selected, that is T0 (pocket 0, as io.tool-prep-pocket reports
+  it); current, it is the pocket the tool in the spindle came from, which
+  is all the preview has (its GET_EXTERNAL_TOOL_SLOT() is always 0), or -1
+  with no tool loaded. A negative index is nothing selected or loaded (-1).
+*/
+int Interp::pocket_number(int index, bool selected) const
+{
+    if (index < 0) return -1;
+    if (_setup.random_toolchanger) return index;
+    if (index == 0) {
+        if (selected) return 0;
+        return _setup.tool_table[0].toolno > 0 ? _setup.tool_table[0].pocketno : -1;
+    }
+    if (index >= CANON_POCKETS_MAX) return -1;
+    return _setup.tool_table[index].pocketno;
+}
+
+/*
+  The reverse of pocket_number(), for Python assigning current_pocket or
+  selected_pocket. A non-random table may put several tools in one pocket,
+  so the tools the change is about are tried first - the selected tool, then
+  the one in the spindle - before the first tool in that pocket. Returns
+  false, leaving *index alone, if no tool is in that pocket.
+*/
+bool Interp::pocket_index(int pocket, bool selected, int *index) const
+{
+    if (_setup.random_toolchanger) {
+        if (pocket < -1 || pocket >= CANON_POCKETS_MAX) return false;
+        *index = pocket;
+        return true;
+    }
+    if (pocket < 0) {
+        *index = selected ? -1 : 0;
+        return true;
+    }
+    const int tools[] = { _setup.selected_tool, _setup.tool_table[0].toolno };
+    for (int toolno : tools) {
+        if (toolno <= 0) continue;
+        for (int i = 1; i < CANON_POCKETS_MAX; i++) {
+            if (_setup.tool_table[i].toolno == toolno
+                && _setup.tool_table[i].pocketno == pocket) {
+                *index = i;
+                return true;
+            }
+        }
+    }
+    if (pocket == 0) {                  // T0, or no tool in the spindle
+        *index = 0;
+        return true;
+    }
+    for (int i = 1; i < CANON_POCKETS_MAX; i++) {
+        if (_setup.tool_table[i].toolno != -1
+            && _setup.tool_table[i].pocketno == pocket) {
+            *index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 int Interp::find_tool_pocket(setup_pointer settings, int toolno, int *pocket)
 {
-#ifdef TOOL_NML //{
+    // T0 on a non-random changer is no tool, in no pocket. Its index is the
+    // spindle's, whose entry may still carry the pocket of the tool that was
+    // unloaded.
     if(!settings->random_toolchanger && toolno == 0) {
         *pocket = 0;
         return INTERP_OK;
     }
-#else //}{
-    (void)settings;
-    // special case is included in tooldata_find_index_for_tool()
-#endif //}
     int idx = tooldata_find_index_for_tool(toolno);
     *pocket = 0; //not found
     CHKS((idx == -1), (_("Requested tool %d not found in the tool table")), toolno);

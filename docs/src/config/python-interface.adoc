@@ -179,6 +179,15 @@ see <<python:reading-ini-values,ReadingINI file values>> for an example.
 *g5x_offset*:: '(returns tuple of floats)' -
   offset of the currently active coordinate system.
 
+*g68_active*:: '(returns integer)' -
+  a tilted work plane (G68.2) is in effect.
+
+*g68_offset*:: '(returns tuple of floats)' -
+  origin of the tilted work plane, in the coordinate system it was defined in.
+
+*g68_rotation*:: '(returns tuple of floats)' -
+  rotation of the tilted work plane, nine values row by row; its columns are the plane's X, Y and Z.
+
 *g92_offset*:: '(returns tuple of floats)' -
   pose of the current g92 offset.
 
@@ -235,12 +244,23 @@ see <<python:reading-ini-values,ReadingINI file values>> for an example.
   * KINEMATICS_INVERSE_ONLY
   * KINEMATICS_BOTH
 
+*kins_type*:: '(returns integer)' -
+  the kinematics type motion runs, as 'G12.1' selects it and the motion.kins-type pin reports it; 0 for a module that switches nothing.
+
+*kins_type_flags*:: '(returns tuple of integers)' -
+  what the kinematics module declares each kinematics type to be, one entry per type: a sum of KINSTYPE_IDENTITY, KINSTYPE_PRIMARY and KINSTYPE_MACHINE, or -1 for a type the module does not provide or declares nothing about.
+  See the <<cha:switchable-kinematics,Switchable Kinematics>> chapter.
+
 *limit*:: '(returns tuple of integers)' -
   axis limit masks. minHardLimit=1,
   maxHardLimit=2, minSoftLimit=4, maxSoftLimit=8.
 
 *linear_units*:: '(returns float)' -
   machine linear units per mm, reflects [TRAJ]LINEAR_UNITS INI value.
+
+*loaded_tool*:: '(returns tool_result)' -
+  the tool table entry of the tool in the spindle, with the same fields as an
+  entry of `tool_table`. The id is 0 or -1 if no tool is loaded.
 
 *max_acceleration*:: '(returns float)' -
   maximum  acceleration. Reflects [TRAJ]MAX_ACCELERATION.
@@ -304,7 +324,10 @@ see <<python:reading-ini-values,ReadingINI file values>> for an example.
   flag, True if a probe operation is in progress.
 
 *program_units*:: '(returns integer)' -
-  one of CANON_UNITS_INCHES=1, CANON_UNITS_MM=2, CANON_UNITS_CM=3
+  one of CANON_UNITS_INCHES=1, CANON_UNITS_MM=2, CANON_UNITS_CM=3.
+  Follows the active G20/G21 reported in *gcodes*: the executing line while
+  a program runs, the interpreter otherwise. CANON_UNITS_CM is never reported:
+  G-code cannot select it and canterp maps it to mm.
 
 *queue*:: '(returns integer)' -
   current size of the trajectory planner queue.
@@ -364,8 +387,10 @@ see <<python:reading-ini-values,ReadingINI file values>> for an example.
 *tool_table*:: '(returns tuple of tool_results)' -
   list of tool entries. Each entry is a sequence of the following fields:
   id, xoffset, yoffset, zoffset, aoffset, boffset, coffset, uoffset, voffset,
-  woffset, diameter, frontangle, backangle, orientation. The id and orientation
-  are integers and the rest are floats.
+  woffset, diameter, frontangle, backangle, orientation, pocketno. The id,
+  orientation and pocketno are integers and the rest are floats. The pocketno
+  is the tool's pocket number from the tool table. For the tool in the spindle
+  use `loaded_tool`.
 [source,python]
 ----
 #!/usr/bin/env python3
@@ -373,9 +398,9 @@ see <<python:reading-ini-values,ReadingINI file values>> for an example.
 import linuxcnc
 s = linuxcnc.stat()
 s.poll()
-# to find the loaded tool information it is in tool table index 0
-if s.tool_table[0].id != 0: # a tool is loaded
-    print(s.tool_table[0].zoffset)
+# the loaded tool's entry
+if s.loaded_tool.id > 0: # a tool is loaded
+    print(s.loaded_tool.zoffset)
 else:
     print("No tool loaded.")
 ----

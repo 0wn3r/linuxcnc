@@ -294,10 +294,6 @@ Variables in each section have an associated type as denoted in parentheses afte
   You can put whatever you want here as long as you make it a single line long.
 * `DEBUG = 0` - (u64) Debug level 0 means no messages will be printed when LinuxCNC is run from a <<faq:terminal,terminal>>.
   Debug flags are usually only useful to developers. See src/emc/nml_intf/debugflags.h for other settings.
-* `RCS_DEBUG = 1` (u64) RCS debug messages to show. Print only errors (1) by default if EMC_DEBUG_RCS and EMC_DEBUG_RCS bits in
-  `DEBUG` are unset, otherwise print all (-1). Use this to select RCS debug messages. See src/libnml/rcs/rcs_print.hh for all MODE flags.
-* `RCS_DEBUG_DEST = STDOUT` - (enum) how to output RCS_DEBUG messages (NULL, STDOUT, STDERR, FILE, LOGGER, MSGBOX).
-* `RCS_MAX_ERR = -1` - (int) Number after which RCS errors are not reported anymore (-1 = infinite).
 * `NML_FILE = /usr/share/linuxcnc/linuxcnc.nml` - (string) Set this if you want to use a non-default NML configuration file.
 
 [[sub:ini:sec:display]]
@@ -360,11 +356,12 @@ Descriptions of the interfaces are in the Interfaces section of the User Manual.
   The `PROGRAM_PREFIX` directory is searched before the directories listed in `[RS274]SUBROUTINE_PATH` and `[RS274]USER_M_PATH`.
 * `INTRO_GRAPHIC = emc2.gif` - The image shown on the splash screen.
 * `INTRO_TIME = 5` - The maximum time to show the splash screen, in seconds.
-* `CYCLE_TIME = 100` - Cycle time of the display GUI.
-  Depending on the screen, this can be in seconds or ms (ms preferred).
-  This is often the update rate rather then sleep time between updates.
+* `CYCLE_TIME = 0.100` - Cycle time of the display GUI, in seconds.
+  A value from 0.001 up to but not including 1.0 is in seconds; a value of 1.0 or more is read as milliseconds, so `100` also means 0.1 s.
+  Any other value (zero, negative or not a number) gives a warning and the GUI uses 0.150 s, as it does when the setting is missing.
+  This is often the update rate rather than sleep time between updates.
   If the update time is not set right the screen can become unresponsive or very jerky.
-  A value of 100 ms (0.1 s) is a common setting though a range of 50 - 200 ms (.05 - .2 s) may be useable.
+  A value of 0.1 s is a common setting though a range of 0.05 - 0.2 s may be useable.
   An under powered CPU may see improvement with a longer setting.
   Usually the default is fine.
 * `PREVIEW_TIMEOUT = 5` - Timeout (in seconds) for loading graphical preview of G-code. Currently AXIS only.
@@ -639,8 +636,15 @@ The maximum number of `USER_M_PATH` directories is defined at compile time (typ:
   Allow to clear the G92 offset automatically when config start-up.
 * `DISABLE_AUTO_G54 = 0` (bool, Default: 0) +
   When set M2 and M30 will no longer automatically reset the active WCS to 'G54'.
+* `RETAIN_WORK_PLANE = 0` (bool, Default: 0) +
+  When set M2, M30 and an abort no longer cancel a <<gcode:g68.2,tilted work plane>>. A restart still does.
 * `DISABLE_FANUC_STYLE_SUB = 0` (Default: 0)
   If there is reason to disable Fanuc subroutines set it to 1.
+* `MACHINE_MOVES_IN_MACHINE_FRAME = 0` (bool, Default: 0) +
+  When set, 'G53', 'G28' and 'G30' run as 'G53.5', 'G28.5' and 'G30.5' whenever the kinematics in force is not the machine frame type, and 'G28.1' and 'G30.1' store the machine frame position those read back: the slides go to the words or to the stored position whatever the tool, the head and the table are doing. The machine frame type is the type the module flags as such, the identity kinematics on a machine whose slides line up with its frame, and neither the tool centre point nor a raw joint identity on one whose slides do not. On the machine frame type the codes are unchanged.
+  Unset, these codes work in the world of the kinematics in force, which on a table-side kinematics turns with the table, and under a tool centre point kinematics with the tool tilted puts the slides where the tool and the head angle take them.
+  A GUI's preview reads a program on the kinematics type the machine is on when the program is loaded, as running it would; the 'G53' the GUI puts ahead of the program to say where the machine stands stays in the world of that type.
+  See <<gcode:g53,G53>>.
 * 'G73_PECK_CLEARANCE = .020' (default: Metric machine: 1mm, imperial machine: .050 inches)
   Chip breaking back-off distance in machine units
 * 'G83_PECK_CLEARANCE = .020' (default: Metric machine: 1mm, imperial machine: .050 inches)
@@ -1033,9 +1037,13 @@ The _<letter>_ specifies one of: X Y Z A B C U V W
   A `LINEAR` axis is a length: its words, offsets, stored positions and tool offsets follow G20 and G21 and `[TRAJ]LINEAR_UNITS`.
   An `ANGULAR` axis is an angle in degrees whatever G20 or G21 says, in `[TRAJ]ANGULAR_UNITS` for the machine, and may be a `WRAPPED_ROTARY` or have a `LOCKING_INDEXER_JOINT`.
   The feed of a move depends on the type too, see `FEED_AXES` in the <<sub:ini:sec:traj,[TRAJ] section>>.
-  The AXIS GUI shows the axis in the units of its type; other GUIs may not.
+  The preview, the DROs, touch off and jogging of the GUIs follow the type too.
 * `MAX_VELOCITY = 1.2` - (real) Maximum velocity for this axis in <<sub:ini:sec:traj,machine units>> per second.
 * `MAX_ACCELERATION = 20.0` - (real) Maximum acceleration for this axis in machine units per second squared.
++
+`MAX_VELOCITY` and `MAX_ACCELERATION` bound the letter in the world of the kinematics in force.
+The joints are bound on their own: every move is capped at what its joints can follow within their `[JOINT_N]` limits, read through the kinematics module's Jacobian along the move, and a world jog the same way every servo cycle, so on a kinematics that is not the identity a move or a jog runs at the pace of its slowest joint whatever these say.
+See the <<cha:switchable-kinematics,Switchable Kinematics>> chapter, INI file limit settings.
 * `MAX_JERK = 0.0` - (real) Maximum jerk for this axis in machine units per second cubed.
   Used when S-curve trajectory planning is enabled.
   When set to 0 (default), no per-axis jerk limiting is applied.
@@ -1047,6 +1055,11 @@ The _<letter>_ specifies one of: X Y Z A B C U V W
   When this limit is exceeded, the controller aborts axis motion.
   The axis must be homed before MAX_LIMIT is in force.
   For a rotary axis (A,B,C typ) with unlimited rotation having no `MAX_LIMIT` for that axis in the `[AXIS_`<letter>`]` section a value of 1e99 is used.
++
+`MIN_LIMIT` and `MAX_LIMIT` together are a box in the machine frame: the carriage, or the flange of a robot, in machine coordinates, the frame that does not move when a head tilts or a tool is loaded.
+On a kinematics module that declares its machine frame type (see the <<cha:switchable-kinematics,Switchable Kinematics>> chapter) every move is checked against the box where its joints put the machine frame, whatever kinematics type is in force: a tool centre point move whose tip lies past the box with the carriage inside it is accepted, and a 'G53.5' to a carriage position past the box is refused.
+The travel itself is the `[JOINT_N]` limits; the box is a restriction the configuration adds inside it.
+A module with one kinematics type whose joints are its slides, maxkins, reads the box on its joints, each in its letter. A module that declares no machine frame type and whose joints are not its slides keeps the box on the world of the kinematics in force.
 * `WRAPPED_ROTARY = 1` - (bool) When this is set to 1 for an ANGULAR axis the axis will move 0-359.999 degrees.
   Positive Numbers will move the axis in a positive direction and negative numbers will move the axis in the negative direction.
   It is ignored on a `LINEAR` axis.
@@ -1085,7 +1098,7 @@ Example: `loadrt motmod ... unlock_joints_mask=0x38` creates unlock-pins for joi
 [source,hal]
 ----
 axis.<letter>.eoffset-enable
-axis.<letter>.eoffset-count
+axis.<letter>.eoffset-counts
 axis.<letter>.eoffset-scale
 ----
 

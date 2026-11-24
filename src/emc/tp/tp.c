@@ -158,6 +158,8 @@ STATIC int tcRotaryMotionCheck(TC_STRUCT const * const tc) {
             }
         case TC_SPHERICAL:
             return true;
+        case TC_JOINT:
+            return true;
         default:
             tp_debug_print("Unknown motion type!\n");
             return false;
@@ -439,12 +441,23 @@ STATIC void tpReleaseQueuedPlanners(TP_STRUCT * const tp)
  *    intended to put the motion queue in the state it would be if all queued
  *    motions finished at the current position.
  */
+/* What the planner knows in joint space belongs to the queue: with the
+   queue reset, the queue end is no longer at those joints, no segment is
+   left to hand its end joints out, and no joint segment is waiting. */
+STATIC void tpForgetJoints(TP_STRUCT * const tp)
+{
+    tp->queue_end_joints_valid = 0;
+    tp->joint_end_valid = 0;
+    tp->joint_segments_queued = 0;
+}
+
 int tpClear(TP_STRUCT * const tp)
 {
     tpReleaseQueuedPlanners(tp);
     tcqInit(&tp->queue);
     tp->queueSize = 0;
     tp->goalPos = tp->currentPos;
+    tpForgetJoints(tp);
     // Clear out status ID's
     tp->nextId = 0;
     tp->execId = 0;
@@ -502,6 +515,8 @@ int tpInit(TP_STRUCT * const tp)
     tp->spindle.overrun_reported = 0;
     tp->spindle.waiting_for_index = MOTION_INVALID_ID;
     tp->spindle.waiting_for_atspeed = MOTION_INVALID_ID;
+    tp->spindle.pending_offset = 0.0;
+    tp->spindle.angle_hold_pending = 0;
 
     tp->reverse_run = TC_DIR_FORWARD;
     tp->termCond = TC_TERM_COND_PARABOLIC;
@@ -1649,6 +1664,8 @@ int tpAddRigidTap(TP_STRUCT * const tp,
             acc,
             ini_maxjerk);
 
+    tp->queue_end_joints_valid = 0;
+
     // Setup rigid tap geometry
     pmRigidTapInit(&tc.coords.rigidtap,
             &tp->goalPos,
@@ -2071,6 +2088,11 @@ tc_blend_type_t tpHandleBlendArc(TP_STRUCT * const tp, TC_STRUCT * const tc) {
         tp_debug_print(" queue empty\n");
         return NO_BLEND;
     }
+    if (prev_tc->motion_type == TC_JOINT) {
+        // nothing blends with a joint interpolated segment
+        tcSetTermCond(prev_tc, tc, TC_TERM_COND_STOP);
+        return NO_BLEND;
+    }
     if (prev_tc->progress > prev_tc->target / 2.0) {
         tp_debug_print(" prev_tc progress (%f) is too large, aborting blend arc\n", prev_tc->progress);
         return NO_BLEND;
@@ -2107,6 +2129,80 @@ tc_blend_type_t tpHandleBlendArc(TP_STRUCT * const tp, TC_STRUCT * const tc) {
     }
 
     return blend_used;
+}
+
+/**
+ * Add a joint interpolated segment to the tc queue.
+ *
+ * The joints run from start to end together over a "length" that is the
+ * joint space distance between them.  vel and acc are already the tightest
+ * per-joint limits scaled onto that length, so no joint exceeds its own.
+ * Nothing blends into or out of it: the segment before it is made to stop
+ * and so is this one, since the path between the two world poses is not a
+ * line and the next segment has to start from rest at world_end.
+ */
+int tpAddJointLine(TP_STRUCT * const tp, const double *start, const double *end,
+        int num_joints, EmcPose world_end, int canon_motion_type,
+        double vel, double ini_maxvel, double acc, double ini_maxjerk,
+        unsigned char enables, struct state_tag_t tag)
+{
+    TC_STRUCT tc = {0};
+    PmJointLine *jl = &tc.coords.joint;
+    TC_STRUCT *prev_tc;
+    double length = 0.0;
+    int i;
+
+    if (!tp || !start || !end || num_joints <= 0 || num_joints > EMCMOT_MAX_JOINTS) {
+        return TP_ERR_MISSING_INPUT;
+    }
+    if (tp->aborting) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "TP is aborting\n");
+        return TP_ERR_FAIL;
+    }
+
+    tcInit(&tc, TC_JOINT, canon_motion_type, tp->cycleTime, enables, 0);
+    tc.tag = tag;
+    tpSetupSyncedIO(tp, &tc);
+    tcSetupState(&tc, tp);
+    // a joint move has no path to synchronise to a spindle along
+    tc.synchronized = TC_SYNC_NONE;
+    tc.uu_per_rev = 0.0;
+    tcSetupMotion(&tc, vel, ini_maxvel, acc, ini_maxjerk);
+
+    jl->num_joints = num_joints;
+    for (i = 0; i < EMCMOT_MAX_JOINTS; i++) {
+        jl->start[i] = (i < num_joints) ? start[i] : 0.0;
+        jl->end[i] = (i < num_joints) ? end[i] : 0.0;
+        length += (jl->end[i] - jl->start[i]) * (jl->end[i] - jl->start[i]);
+    }
+    jl->world_start = tp->goalPos;
+    jl->world_end = world_end;
+
+    tc.target = pmSqrt(length);
+    if (tc.target < TP_POS_EPSILON) {
+        return TP_ERR_ZERO_LENGTH;
+    }
+    tc.nominal_length = tc.target;
+    tcClampVelocityByLength(&tc);
+    // it runs in joint units, so the max velocity slider does not cap it
+    tc.vlimit_scale = 0.0;
+    tc.indexer_jnum = -1;
+    tcSetTermCond(&tc, NULL, TC_TERM_COND_STOP);
+
+    prev_tc = tcqLast(&tp->queue);
+    if (prev_tc) {
+        tcSetTermCond(prev_tc, &tc, TC_TERM_COND_STOP);
+        tcFinalizeLength(prev_tc);
+    }
+
+    int retval = tpAddSegmentToQueue(tp, &tc, true);
+    if (retval == TP_ERR_OK) {
+        for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { tp->queue_end_joints[i] = jl->end[i]; }
+        tp->queue_end_joints_valid = 1;
+        tp->joint_segments_queued++;
+    }
+    tpRunOptimization(tp);
+    return retval;
 }
 
 //TODO final setup steps as separate functions
@@ -2151,6 +2247,7 @@ int tpAddLine(TP_STRUCT * const tp, EmcPose end, int canon_motion_type,
             ini_maxjerk);
     tc.vlimit_scale = vlimit_scale;
     // Setup line geometry
+    tp->queue_end_joints_valid = 0;
     pmLine9Init(&tc.coords.line,
             &tp->goalPos,
             &end);
@@ -2223,6 +2320,7 @@ int tpAddCircle(TP_STRUCT * const tp,
             tp->cycleTime,
             enables,
             atspeed);
+    tp->queue_end_joints_valid = 0;
     tc.tag = tag;
     // Setup any synced IO for this move
     tpSetupSyncedIO(tp, &tc);
@@ -3318,6 +3416,7 @@ STATIC void tpHandleEmptyQueue(TP_STRUCT * const tp)
 
     tpReleaseQueuedPlanners(tp);
     tcqInit(&tp->queue);
+    tpForgetJoints(tp);
     tp->goalPos = tp->currentPos;
     tp->done = 1;
     tp->depth = tp->activeDepth = 0;
@@ -3373,6 +3472,16 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
             return TP_ERR_FAIL;
     }
 
+    // a joint interpolated segment leaves its end joints behind for the
+    // servo thread: it asks after the segment is gone, and would otherwise
+    // invert the end position with the previous cycle's joints as seed
+    if (tc->motion_type == TC_JOINT) {
+        int i;
+        for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { tp->joint_end[i] = tc->coords.joint.end[i]; }
+        tp->joint_end_valid = 1;
+        if (tp->joint_segments_queued > 0) { tp->joint_segments_queued--; }
+    }
+
     //Clear status flags associated since segment is done
     //TODO stuff into helper function?
     tc->active = 0;
@@ -3419,6 +3528,7 @@ STATIC tp_err_t tpHandleAbort(TP_STRUCT * const tp, TC_STRUCT * const tc,
             (tc->currentvel == 0.0 && (!nexttc || nexttc->currentvel == 0.0))) {
         tpReleaseQueuedPlanners(tp);
         tcqInit(&tp->queue);
+        tpForgetJoints(tp);
         tp->goalPos = tp->currentPos;
         tp->done = 1;
         tp->depth = tp->activeDepth = 0;
@@ -3483,8 +3593,18 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
             /* passed index, start the move */
             emcmotStatus->spindleSync = 1;
             tp->spindle.waiting_for_index = MOTION_INVALID_ID;
-            tc->sync_accel = 1;
             tp->spindle.revs = 0;
+            tp->spindle.offset = 0.0;
+            /* gate on > 0.0, matching tpSyncPositionMode(): a value that does
+             * not request a hold there must not suppress the ramp here, or the
+             * move would start with neither */
+            if (!(tc->angle_offset > 0.0)) {
+                /* no angle offset: use sync_accel to ramp up to spindle speed */
+                tc->sync_accel = 1;
+            }
+            /* if angle_offset > 0: tpSyncPositionMode() will hold Z at rest
+             * until the spindle reaches angle_offset revolutions past the
+             * index pulse, then release to tracking mode */
         }
     }
     return TP_ERR_OK;
@@ -3506,7 +3626,8 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
         return TP_ERR_MISSING_INPUT;
     }
 
-    if (tp->reverse_run && (tc->motion_type == TC_RIGIDTAP || tc->synchronized != TC_SYNC_NONE)) {
+    if (tp->reverse_run && (tc->motion_type == TC_RIGIDTAP || tc->motion_type == TC_JOINT
+                            || tc->synchronized != TC_SYNC_NONE)) {
         //Can't activate a segment with synced motion in reverse
         return TP_ERR_REVERSE_EMPTY;
     }
@@ -3579,6 +3700,9 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
         // ask for an index reset
         emcmotStatus->spindle_status[tp->spindle.spindle_num].spindle_index_enable = 1;
         tp->spindle.offset = 0.0;
+        // a fresh index sync: any angle offset on the segment that follows it
+        // has yet to be waited out
+        tp->spindle.angle_hold_pending = 1;
         rtapi_print_msg(RTAPI_MSG_DBG, "Waiting on sync. spindle_num %d..\n", tp->spindle.spindle_num);
         return TP_ERR_WAITING;
     }
@@ -3629,6 +3753,29 @@ STATIC void tpSyncOverrun(TP_STRUCT * const tp, double amount)
 
 
 /**
+ * Warn when the segment is too short to absorb the lead-in lag.
+ * The tracking loop below closes an error e with v = v_spindle + sqrt(e * a),
+ * which takes 2 * sqrt(e / a) seconds.
+ */
+STATIC void tpCheckSyncLeadIn(TC_STRUCT const * const tc, double pos_error)
+{
+    double accel = tcGetTangentialMaxAccel(tc);
+    if (accel <= 0.0) {
+        return;
+    }
+    double err = fabs(pos_error);
+    double catchup = tc->currentvel * 2.0 * pmSqrt(err / accel) + err;
+    double remaining = tc->target - tc->progress;
+    if (catchup > remaining) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+                "spindle-synchronized move %d: lead-in too short to reach sync, "
+                "need %f more travel\n",
+                tc->id, catchup - remaining);
+    }
+}
+
+
+/**
  * Run position mode synchronization.
  * Updates requested velocity for a trajectory segment to track the spindle's position.
  */
@@ -3648,6 +3795,25 @@ STATIC void tpSyncPositionMode(TP_STRUCT * const tp, TC_STRUCT * const tc,
         tp->spindle.revs = spindle_pos;
     }
 
+    /* Angle-offset hold: after index, keep the axis at rest until the spindle
+     * has advanced angle_offset revolutions (spindle.revs resets to 0 at the
+     * index pulse).  angle_hold_pending scopes this to the first segment after
+     * the index -- the later segments of a threading pass carry the same
+     * angle_offset, and must keep tracking against the offset accumulated by
+     * tpCompleteSegment() rather than re-zeroing it here. */
+    if (tp->spindle.angle_hold_pending && tc->angle_offset > 0.0) {
+        if (tp->spindle.revs < tc->angle_offset) {
+            tc->target_vel = 0.0;
+            return;
+        }
+        /* Spindle reached target angle: set offset so pos_desired = 0 now,
+         * then fall through to normal tracking (sync_accel stays 0).  The TC's
+         * angle_offset is left intact so the segment still describes what was
+         * programmed, which a reverse run over it depends on. */
+        tp->spindle.offset = tp->spindle.revs;
+        tp->spindle.angle_hold_pending = 0;
+    }
+
     double pos_desired = (tp->spindle.revs - tp->spindle.offset) * tc->uu_per_rev;
     double pos_error = pos_desired - tc->progress;
 
@@ -3664,10 +3830,13 @@ STATIC void tpSyncPositionMode(TP_STRUCT * const tp, TC_STRUCT * const tc,
         target_vel = spindle_vel * tc->uu_per_rev;
         if(tc->currentvel >= target_vel) {
             tc_debug_print("Hit accel target in pos sync\n");
-            // move target so as to drive pos_error to 0 next cycle
-            tp->spindle.offset = tp->spindle.revs - tc->progress / tc->uu_per_rev;
+            // Leave the sync origin on the spindle index. The lag built up
+            // while ramping to sync speed is a real position error, so hand it
+            // to the tracking loop below; folding it into the origin instead
+            // shifts the thread by an amount that grows with spindle speed.
             tc->sync_accel = 0;
             tc->target_vel = target_vel;
+            tpCheckSyncLeadIn(tc, pos_error);
         } else {
             tc_debug_print("accelerating in pos_sync\n");
             // beginning of move and we are behind: accel as fast as we can
@@ -3812,6 +3981,15 @@ STATIC int tpUpdateCycle(TP_STRUCT * const tp,
     int planner_type = GET_TRAJ_PLANNER_TYPE();
 
     if(mode == NULL) planner_type = 0;
+
+    /* Position sync tracks the spindle every cycle: tpSyncPositionMode() sizes
+     * its correction for an acceleration that changes at once, so the delay of
+     * a jerk limit makes the axis oscillate around the spindle.  Run these
+     * segments trapezoidal, as the S-curve failure fallback below does. */
+    if (mode && tc->synchronized == TC_SYNC_POSITION) {
+        planner_type = 0;
+        *mode = TP_SCURVE_ACCEL_ERROR;
+    }
 
     if(planner_type != 1){
         // If the slowdown is not too great, use velocity ramping instead of trapezoidal velocity
@@ -4342,7 +4520,7 @@ int tpRunCycle(TP_STRUCT * const tp, long period)
     return TP_ERR_OK;
 }
 
-int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int mode) {
+int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int mode, double angular_offset_degrees) {
     if(sync) {
         if (mode) {
             tp->synchronized = TC_SYNC_VELOCITY;
@@ -4351,11 +4529,17 @@ int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int mode) {
         }
         tp->uu_per_rev = sync;
         tp->spindle.spindle_num = spindle;
+        /* the offset is a direction-less angle past the index, so take the
+         * magnitude -- the interpreter does the same with a negative D word,
+         * and this keeps the guarantee for any other caller of this API */
+        tp->spindle.pending_offset = fabs(angular_offset_degrees) / 360.0;
         /* each synced move may report again */
         tp->spindle.overrun_reported = 0;
         tp->spindle.overrun_cycles = 0;
-    } else
+    } else {
         tp->synchronized = 0;
+        tp->spindle.pending_offset = 0.0;
+    }
 
     return TP_ERR_OK;
 }
@@ -4408,6 +4592,72 @@ int tpGetPos(TP_STRUCT const * const tp, EmcPose * const pos)
     }
 
     return TP_ERR_OK;
+}
+
+int tpGetGoalPos(TP_STRUCT const * const tp, EmcPose * const pos)
+{
+    if (0 == tp) {
+        ZERO_EMC_POSE((*pos));
+        return TP_ERR_FAIL;
+    }
+    *pos = tp->goalPos;
+    return TP_ERR_OK;
+}
+
+/**
+ * The joints the active segment commands, when it is a joint interpolated
+ * one: the servo thread takes these instead of inverting the position.
+ * Returns the joint count, or 0 when the active segment is any other kind.
+ */
+int tpGetJointPos(TP_STRUCT const * const tp, double * const joints)
+{
+    TC_STRUCT const *tc;
+
+    if (!tp || !joints) { return 0; }
+    tc = tcqItem((TC_QUEUE_STRUCT *)&tp->queue, 0);
+    if (!tc || !tc->active) { return 0; }
+    return tcGetJointPos(tc, joints);
+}
+
+/**
+ * The end joints of a joint interpolated segment that completed this
+ * cycle, once: the seed for the servo thread's inverse of the position the
+ * planner is now at, which is that segment's end and whatever a following
+ * segment added in the rest of the cycle.  Returns 1 and fills the joints,
+ * or 0.
+ */
+int tpTakeJointEnd(TP_STRUCT * const tp, double * const joints)
+{
+    int i;
+
+    if (!tp || !joints || !tp->joint_end_valid) { return 0; }
+    for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { joints[i] = tp->joint_end[i]; }
+    tp->joint_end_valid = 0;
+    return 1;
+}
+
+/**
+ * How many joint interpolated segments the queue holds, active one
+ * included.  An external offset cannot ride on one, so its planning waits
+ * while any is queued.
+ */
+int tpJointSegmentsQueued(TP_STRUCT const * const tp)
+{
+    return tp ? tp->joint_segments_queued : 0;
+}
+
+/**
+ * Where the queue ends in joint space, if the last segment queued was a
+ * joint interpolated one.  Returns 1 and fills the joints, or 0 when the
+ * answer is the inverse of the goal position.
+ */
+int tpGetQueueEndJoints(TP_STRUCT const * const tp, double * const joints)
+{
+    int i;
+
+    if (!tp || !joints || !tp->queue_end_joints_valid) { return 0; }
+    for (i = 0; i < EMCMOT_MAX_JOINTS; i++) { joints[i] = tp->queue_end_joints[i]; }
+    return 1;
 }
 
 int tpIsDone(TP_STRUCT * const tp)
@@ -4502,6 +4752,12 @@ EXPORT_SYMBOL(tpAbort);
 EXPORT_SYMBOL(tpActiveDepth);
 EXPORT_SYMBOL(tpAddCircle);
 EXPORT_SYMBOL(tpAddLine);
+EXPORT_SYMBOL(tpAddJointLine);
+EXPORT_SYMBOL(tpGetGoalPos);
+EXPORT_SYMBOL(tpGetJointPos);
+EXPORT_SYMBOL(tpTakeJointEnd);
+EXPORT_SYMBOL(tpJointSegmentsQueued);
+EXPORT_SYMBOL(tpGetQueueEndJoints);
 EXPORT_SYMBOL(tpAddRigidTap);
 EXPORT_SYMBOL(tpClear);
 EXPORT_SYMBOL(tpCreate);

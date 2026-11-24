@@ -1,7 +1,6 @@
-/* misnomer: _setup.current_pocket,selected_pocket
-** These variables are actually indexes to sequential tool
-** data structs (not real pockets).
-** Future renaming will affect current usage in python remaps.
+/* _setup.current_pocket,selected_pocket are tooldata indices. Python sees
+** them as the pocket numbers the tool table gives, the same as
+** #<_current_pocket> and #<_selected_pocket>; see Interp::pocket_number().
 */
 
 /*    This is a component of LinuxCNC
@@ -32,6 +31,8 @@
 #include <boost/python/exception_translator.hpp>
 #include <boost/python/module.hpp>
 #include <boost/python/suite/indexing/map_indexing_suite.hpp>
+#include <boost/python/copy_const_reference.hpp>
+#include <boost/python/return_value_policy.hpp>
 #include <map>
 #include "boost_pyenum_macros.hh"
 
@@ -100,12 +101,9 @@ static void setErrorMsg(Interp &interp, const char *s)
     if ((s == NULL) || (strlen(s) == 0))
 	s = "###";
     interp.setError ("%s", s);
-    settings->stack_index = 0;
-    strncpy(settings->stack[settings->stack_index],
-	    "Python", STACK_ENTRY_LEN);
-    settings->stack[settings->stack_index][STACK_ENTRY_LEN-1] = 0;
-    settings->stack_index++;
-    settings->stack[settings->stack_index][0] = 0;
+    settings->stack[0] = "Python";
+    settings->stack[1] = nullptr;
+    settings->stack_index = 1;
 }
 
 static bp::object errorStack(Interp &interp)
@@ -113,8 +111,8 @@ static bp::object errorStack(Interp &interp)
     setup *settings  = &interp._setup;
     bp::list msgs;
 
-    for (int i = 0; i < settings->stack_index; i++)
-	msgs.append(bp::object( (const char *) settings->stack[i]));
+    for (int i = 0; i < settings->stack_index && i < STACK_LEN && settings->stack[i]; i++)
+	msgs.append(bp::object(settings->stack[i]));
     return msgs;
 }
 
@@ -634,11 +632,17 @@ static inline void set_call_level(Interp &interp, int value)  {
 	throw std::out_of_range("call_level out of range");
     interp._setup.call_level = value;
 }
+static int pocket_to_index(Interp &interp, int pocket, bool selected) {
+    int index;
+    if (!interp.pocket_index(pocket, selected, &index))
+	throw std::invalid_argument("no tool in pocket " + std::to_string(pocket));
+    return index;
+}
 static inline int get_current_pocket (Interp &interp)  {
-    return interp._setup.current_pocket;
+    return interp.pocket_number(interp._setup.current_pocket, false);
 }
 static inline void set_current_pocket(Interp &interp, int value)  {
-    interp._setup.current_pocket = value;
+    interp._setup.current_pocket = pocket_to_index(interp, value, false);
 }
 static inline int get_cutter_comp_orientation (Interp &interp)  {
     return interp._setup.cutter_comp_orientation;
@@ -743,10 +747,10 @@ static inline void set_retract_mode(Interp &interp, RETRACT_MODE value)  {
     interp._setup.retract_mode = value;
 }
 static inline int get_selected_pocket (Interp &interp)  {
-    return interp._setup.selected_pocket;
+    return interp.pocket_number(interp._setup.selected_pocket, true);
 }
 static inline void set_selected_pocket(Interp &interp, int value)  {
-    interp._setup.selected_pocket = value;
+    interp._setup.selected_pocket = pocket_to_index(interp, value, true);
 }
 static inline int get_selected_tool (Interp &interp)  {
     return interp._setup.selected_tool;
@@ -786,9 +790,6 @@ static inline void set_spindle_turning(Interp &interp, int spindle, int value)  
 }
 static inline int get_stack_index (Interp &interp)  {
     return interp._setup.stack_index;
-}
-static inline void set_stack_index(Interp &interp, int value)  {
-    interp._setup.stack_index = value;
 }
 static inline int get_value_returned (Interp &interp)  {
     return interp._setup.value_returned;
@@ -911,7 +912,8 @@ BOOST_PYTHON_MODULE(interpreter) {
 
 
 	.def("set_errormsg", &setErrorMsg)
-	.def("get_errormsg", &Interp::getSavedError)
+	.def("get_errormsg", &Interp::getSavedError,
+	     bp::return_value_policy<bp::copy_const_reference>())
 	.def("stack", &errorStack)
 	.def("synch", &Interp::synch)
 
@@ -1018,7 +1020,7 @@ BOOST_PYTHON_MODULE(interpreter) {
 	.add_property("spindle_mode", &get_spindle_mode, &set_spindle_mode)
 	.add_property("num_spindles", &get_num_spindles, &set_num_spindles)
 	.add_property("spindle_turning", &get_spindle_turning, &set_spindle_turning)
-	.add_property("stack_index", &get_stack_index, &set_stack_index)
+	.add_property("stack_index", &get_stack_index)
 	.add_property("value_returned", &get_value_returned, &set_value_returned)
 
 	.add_property("current_tool", &get_current_tool, &set_current_tool)

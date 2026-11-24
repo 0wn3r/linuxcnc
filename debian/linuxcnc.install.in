@@ -19,6 +19,7 @@ usr/bin/hal_bridge
 usr/bin/hal_manualtoolchange
 usr/bin/halcmd
 usr/bin/halcmd_twopass
+usr/bin/halfileupdate
 usr/bin/halmeter
 usr/bin/halreport
 usr/bin/halrmt
@@ -36,6 +37,7 @@ usr/bin/hy_vfd
 usr/bin/image-to-gcode
 usr/bin/inivalue
 usr/bin/inivar
+usr/bin/kinslimits
 usr/bin/latency-histogram
 usr/bin/latency-plot
 usr/bin/latency-test

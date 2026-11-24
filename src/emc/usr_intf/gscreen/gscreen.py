@@ -195,6 +195,8 @@ try:
 except:
     pass
 import linuxcnc
+import axis_kinds
+from common.cycle_time import display_cycle_time
 from gscreen import emc_interface
 from gscreen import mdi
 from gscreen import preferences
@@ -618,9 +620,12 @@ class Gscreen:
             if letter.lower() in self.data.axis_list: continue
             if not letter.lower() in ["x","y","z","a","b","c","u","v","w"]: continue
             self.data.axis_list.append(letter.lower())
+        # which axes are angles, as [AXIS_<letter>] TYPE says
+        self.data.axis_angular = axis_kinds.angular(self.inifile)
+        self.emc.axis_angular = self.data.axis_angular
         # check for rotary joints
-        for i in("a","b","c"):
-            if i in self.data.axis_list:
+        for i in self.data.axis_list:
+            if self.data.axis_angular["xyzabcuvw".index(i)]:
                 self.data.rotary_joints = True
                 break
         # check the INI file if UNITS are set to mm"
@@ -634,10 +639,10 @@ class Gscreen:
         units = inifile.maplinearunits(units, fallback=1.0)
         if 1.0 == units:
             self.machine_units_mm=1
-            conversion=[1.0/25.4]*3+[1]*3+[1.0/25.4]*3
+            conversion=axis_kinds.unit_factors(self.inifile, 1.0/25.4)
         else:
             self.machine_units_mm=0
-            conversion=[25.4]*3+[1]*3+[25.4]*3
+            conversion=axis_kinds.unit_factors(self.inifile, 25.4)
         self.status.set_machine_units(self.machine_units_mm,conversion)
 
         # set-up HAL component
@@ -760,7 +765,7 @@ class Gscreen:
         self.data._maxvelocity = temp
 
         # look for angular defaults if there is angular axis
-        if "a" in self.data.axis_list or "b" in self.data.axis_list or "c" in self.data.axis_list:
+        if self.data.rotary_joints:
             # set default angular jog rate
             # must convert from INI's units per second to gscreen's units per minute
             temp = self.inifile.getreal("DISPLAY","DEFAULT_ANGULAR_VELOCITY")
@@ -851,13 +856,10 @@ class Gscreen:
         self.halcomp.ready()
 
         # timers for display updates
-        temp = self.inifile.getreal("DISPLAY","CYCLE_TIME")
-        if not temp:
-            self.add_alarm_entry(_("CYCLE_TIME in [DISPLAY] of INI file is missing: defaulting to 100ms"))
-            temp = 100
-        elif temp < 50:
-            self.add_alarm_entry(_("CYCLE_TIME in [DISPLAY] of INI file is too small: defaulting to 100ms"))
-            temp = 100
+        def cycle_time_warning(message):
+            LOG.warning(message)
+            self.add_alarm_entry(message)
+        temp = display_cycle_time(self.inifile, cycle_time_warning)
         #print(_("timeout %d" % int(temp)))
         if "timer_interrupt" in dir(self.handler_instance):
             GLib.timeout_add(int(temp), self.handler_instance.timer_interrupt)
@@ -4212,7 +4214,7 @@ class Gscreen:
                     elif direction: cmd = 1
                     else: cmd = -1
                     self.emc.jogging(1)
-                    if self.data.active_axis_buttons[0][0] in('a','b','c'):
+                    if self.data.axis_angular["xyzabcuvw".index(self.data.active_axis_buttons[0][0])]:
                         jogincr = self.data.angular_jog_increments[self.data.current_angular_jogincr_index]
                     else:
                         jogincr = self.data.jog_increments[self.data.current_jogincr_index]
@@ -4232,8 +4234,11 @@ class Gscreen:
                     elif direction: cmd = 1
                     else: cmd = -1
                     self.emc.jogging(1)
-                    #print(self.data.jog_increments[self.data.current_jogincr_index])
-                    if self.data.jog_increments[self.data.current_jogincr_index] == ("continuous"): # continuous jog
+                    if self.data.axis_angular[axis]:
+                        jogincr = self.data.angular_jog_increments[self.data.current_angular_jogincr_index]
+                    else:
+                        jogincr = self.data.jog_increments[self.data.current_jogincr_index]
+                    if jogincr == ("continuous"): # continuous jog
                         #print("active axis jog:",axis)
                         self.emc.continuous_jog(axis,cmd)
                     else:
@@ -4241,7 +4246,6 @@ class Gscreen:
                         if cmd == 0: return # don't want release of button to stop jog
                         self.mdi_control.mdi.emcstat.poll()
                         if self.mdi_control.mdi.emcstat.state != 1: return
-                        jogincr = self.data.jog_increments[self.data.current_jogincr_index]
                         distance = self.parse_increment(jogincr)
                         self.emc.incremental_jog(axis,cmd,distance)
 
@@ -4791,9 +4795,9 @@ if __name__ == "__main__":
     if postgui_halfile is not None:
         for f in postgui_halfile:
             if f.lower().endswith('.tcl'):
-                res = os.spawnvp(os.P_WAIT, "haltcl", ["haltcl", "-i", inifile, f])
+                res = subprocess.call(["haltcl", "-i", inifile, f])
             else:
-                res = os.spawnvp(os.P_WAIT, "halcmd", ["halcmd", "-i", inifile, "-f", f])
+                res = subprocess.call(["halcmd", "-i", inifile, "-f", f])
             if res: raise SystemExit(res)
     Gtk.main()
 

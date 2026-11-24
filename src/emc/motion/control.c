@@ -33,7 +33,7 @@
 #include "mot_priv.h"
 #include "homing.h"
 #include "axis.h"
-#include "../nml_intf/state_tag.h"
+#include <nml_intf/state_tag.h>
 
 // Mark strings for translation, but defer translation to userspace
 #define _(s) (s)
@@ -45,6 +45,10 @@ static int    switchkins_type = 0;
 /* kinematics flags */
 KINEMATICS_FORWARD_FLAGS fflags = 0;
 KINEMATICS_INVERSE_FLAGS iflags = 0;
+
+// old modules export no kinematicsJacobian; a jog on them is bounded by
+// the axis limits alone, as before
+#pragma weak kinematicsJacobian
 
 /*! \todo FIXME - debugging - uncomment the following line to log changes in
    JOINT_FLAG and MOTION_FLAG */
@@ -194,6 +198,7 @@ static void output_to_hal(void);
 static void update_status(void);
 
 static void handle_kinematicsSwitch(void);
+static int reanchor_pose(const double *joint_pos, EmcPose *at);
 
 /***********************************************************************
 *                        PUBLIC FUNCTION CODE                          *
@@ -239,13 +244,15 @@ void emcmotController(void *arg, long period)
     /* calculate servo period as a double - period is in integer nsec */
     servo_period = period * 0.000000001;
 
+    /* increment head count to indicate work in progress */
+    rtapi_seqlock_write_begin(&emcmotStatus->head);
+    rtapi_seqlock_write_begin(&emcmotInternal->head);
+
     if((rtapi_uint)period != last_period) {
         emcmotSetCycleTime(period);
         last_period = period;
     }
 
-    /* increment head count to indicate work in progress */
-    emcmotStatus->head++;
     /* here begins the core of the controller */
 
     read_homing_in_pins(ALL_JOINTS);
@@ -279,7 +286,8 @@ void emcmotController(void *arg, long period)
     /* here ends the core of the controller */
     emcmotStatus->heartbeat++;
     /* set tail to head, to indicate work complete */
-    emcmotStatus->tail = emcmotStatus->head;
+    rtapi_seqlock_write_end(&emcmotStatus->tail, &emcmotStatus->head);
+    rtapi_seqlock_write_end(&emcmotInternal->tail, &emcmotInternal->head);
 /* end of controller function */
 }
 
@@ -343,12 +351,13 @@ static void handle_kinematicsSwitch(void) {
 
     emcmot_joint_t *jointKinsSwitch;
     double joint_posKinsSwitch[EMCMOT_MAX_JOINTS] = {0,};
-    /* copy joint position feedback to local array */
+    /* the joints where the planner has put them: pos_cmd is the cubic
+       interpolation behind it, still a few servo cycles short of the end
+       of a move motion reports done, and a pose read off it would hold
+       the joints there */
     for (joint_num = 0; joint_num < emcmotConfig->numJoints; joint_num++) {
-        /* point to joint struct */
         jointKinsSwitch = &joints[joint_num];
-        /* copy feedback */
-        joint_posKinsSwitch[joint_num] = jointKinsSwitch->pos_cmd;
+        joint_posKinsSwitch[joint_num] = jointKinsSwitch->coarse_pos;
     }
 
     /* a module refuses a type it does not provide and goes on running the
@@ -363,8 +372,6 @@ static void handle_kinematicsSwitch(void) {
         return; // the kinematics in force is unchanged
     }
 
-    KINEMATICS_FORWARD_FLAGS tmpFFlags = fflags;
-    KINEMATICS_INVERSE_FLAGS tmpIFlags = iflags;
 #ifdef SWITCHKINS_DEBUG
     double beforePose[EMCMOT_MAX_AXIS];
     int anum;
@@ -376,9 +383,7 @@ static void handle_kinematicsSwitch(void) {
        solve them is one the machine cannot run in from here: put the old
        one back, or the inverse would run the joints to wherever the pose
        we know lands in the new one */
-    EmcPose poseKinsSwitch = emcmotStatus->carte_pos_cmd;
-    if (kinematicsForward(joint_posKinsSwitch, &poseKinsSwitch,
-                          &tmpFFlags, &tmpIFlags)) {
+    if (reanchor_pose(joint_posKinsSwitch, NULL) != 0) {
         kinematicsSwitch(switchkins_type);
         reportError(_("kinematicsForward failed for kinematics type %d,"
                       " type %d is still in force"),
@@ -386,7 +391,6 @@ static void handle_kinematicsSwitch(void) {
         SET_MOTION_ERROR_FLAG(1);  // abort
         return; // the kinematics in force and the position are unchanged
     }
-    emcmotStatus->carte_pos_cmd = poseKinsSwitch;
 
     switchkins_type = requested_type;
     hal_set_real(emcmot_hal_data->kins_type, (double)switchkins_type);
@@ -398,9 +402,29 @@ static void handle_kinematicsSwitch(void) {
                ,anum,beforePose[anum],*pcmd_p[anum],*pcmd_p[anum]-beforePose[anum]);
     }
 #endif
+} //handle_kinematicsSwitch()
+
+/* The point re-read from the joints, for when what the joints mean has
+   changed without the joints moving: a kinematics switch, or a tool
+   offset the module applies.  The pose they put the tool at is the new
+   commanded point, the external offsets taken off it, and the planner
+   is moved onto it.  A forward that fails leaves the point alone.
+   The pose with the external offsets still on it is returned in at. */
+static int reanchor_pose(const double *joint_pos, EmcPose *at)
+{
+    KINEMATICS_FORWARD_FLAGS tmpFFlags = fflags;
+    KINEMATICS_INVERSE_FLAGS tmpIFlags = iflags;
+    EmcPose pose = emcmotStatus->carte_pos_cmd;
+
+    if (kinematicsForward(joint_pos, &pose, &tmpFFlags, &tmpIFlags) != 0) {
+        return -1;
+    }
+    emcmotStatus->carte_pos_cmd = pose;
+    if (at) { *at = pose; }
     axis_apply_ext_offsets_to_carte_pos(-1, pcmd_p);
     tpSetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
-} //handle_kinematicsSwitch()
+    return 0;
+}
 
 static void process_inputs(void)
 {
@@ -929,6 +953,82 @@ static void check_for_faults(void)
     }
 }
 
+/* The joints a joint interpolated segment ended on, held while the
+   planner stays at that point: a module's inverse answers with its own
+   joint set, which a robot wrist reaches with the forearm turned half a
+   revolution from the one asked for.  The hold ends when the point moves. */
+static int joint_hold_valid = 0;
+static double joint_hold[EMCMOT_MAX_JOINTS];
+static EmcPose joint_hold_pose;
+
+/* whether two machine points are within tol of each other on every axis */
+static int carte_pos_within(const EmcPose *a, const EmcPose *b, double tol)
+{
+    return fabs(a->tran.x - b->tran.x) < tol && fabs(a->tran.y - b->tran.y) < tol
+	&& fabs(a->tran.z - b->tran.z) < tol
+	&& fabs(a->a - b->a) < tol && fabs(a->b - b->b) < tol && fabs(a->c - b->c) < tol
+	&& fabs(a->u - b->u) < tol && fabs(a->v - b->v) < tol && fabs(a->w - b->w) < tol;
+}
+
+/* whether two machine points are the same, to a hair either way */
+static int same_carte_pos(const EmcPose *a, const EmcPose *b)
+{
+    return carte_pos_within(a, b, 1e-9);
+}
+
+/* A tool offset the module applies has changed under the point.  The
+   machine stays where it is: the point is re-read from the joints under
+   the new offset, and the joints are held there, since the inverse of the
+   re-read point may answer with another joint set.  The interpreter
+   works out the same point ahead of motion and sends it along when it
+   can evaluate the kinematics; where the two disagree, or where it could
+   not say and the point moved, the program is not let go on from a point
+   the interpreter does not have.  Nothing to do outside coordinated mode:
+   the point follows the joints there anyway. */
+void emcmotToolOffsetChanged(const EmcPose *from, const EmcPose *to,
+                             const EmcPose *expected, int have_expected)
+{
+    const double tol = 1e-4;
+    double joint_pos[EMCMOT_MAX_JOINTS] = {0,};
+    EmcPose was = emcmotStatus->carte_pos_cmd;
+    EmcPose now;
+    int joint_num;
+
+    if (same_carte_pos(from, to) || !GET_MOTION_COORD_FLAG()) { return; }
+    for (joint_num = 0; joint_num < emcmotConfig->numJoints; joint_num++) {
+        joint_pos[joint_num] = joints[joint_num].coarse_pos;
+    }
+    if (reanchor_pose(joint_pos, &now) != 0) {
+        reportError(_("the kinematics cannot place the tool from the joints"
+                      " after the tool offset change"));
+        SET_MOTION_ERROR_FLAG(1);
+        return;
+    }
+    for (joint_num = 0; joint_num < EMCMOT_MAX_JOINTS; joint_num++) {
+        joint_hold[joint_num] = joint_pos[joint_num];
+    }
+    joint_hold_pose = now;
+    joint_hold_valid = 1;
+
+    if (have_expected) {
+        if (!carte_pos_within(&emcmotStatus->carte_pos_cmd, expected, tol)) {
+            reportError(_("the tool offset change put the point at"
+                          " %.4f %.4f %.4f, the interpreter expected"
+                          " %.4f %.4f %.4f"),
+                        emcmotStatus->carte_pos_cmd.tran.x,
+                        emcmotStatus->carte_pos_cmd.tran.y,
+                        emcmotStatus->carte_pos_cmd.tran.z,
+                        expected->tran.x, expected->tran.y, expected->tran.z);
+            SET_MOTION_ERROR_FLAG(1);
+        }
+    } else if (!carte_pos_within(&was, &now, tol)) {
+        reportError(_("the tool offset change moved the point under a"
+                      " kinematics the interpreter cannot evaluate;"
+                      " change the tool offset with the machine untilted"));
+        SET_MOTION_ERROR_FLAG(1);
+    }
+}
+
 static void set_operating_mode(void)
 {
     int joint_num;
@@ -1249,6 +1349,149 @@ static void handle_jjogwheels(void)
     first_pass = 0;
 }
 
+/* A world jog is planned per axis against the [AXIS_L] limits, which say
+   nothing about the joints once the kinematics is not the identity: a jog
+   of C under the tool centre point with the head laid over swings the
+   carriage through a circle.  Each cycle, before the teleop planners run,
+   the module's Jacobian at the joints the machine stands in says how fast
+   every joint would move per unit of the jog the planners were asked for,
+   and how that rate has changed since the last cycle (what a carriage on a
+   circle feels as centripetal), and the planners are capped so that no
+   joint is asked for more than its own limits: the velocity by the joint
+   velocity limits, read a stopping distance ahead since the rate keeps
+   growing while the planners slow down, and by the acceleration budget
+   the changing rate takes at that velocity (at most half); the
+   acceleration by what the budget leaves.  All active axes scale together
+   so the jog keeps its direction.  Nothing is done on the identity, or on
+   a module without a Jacobian. */
+static void teleop_joint_cap(double period)
+{
+    static double jac_prev[EMCMOT_MAX_JOINTS][EMCMOT_MAX_AXIS];
+    static int have_prev = 0;
+    static double acc_scale_prev = 1.0;
+    double jac[EMCMOT_MAX_JOINTS][EMCMOT_MAX_AXIS];
+    double joint_pos[EMCMOT_MAX_JOINTS];
+    double dir[EMCMOT_MAX_AXIS], vreq[EMCMOT_MAX_AXIS], areq[EMCMOT_MAX_AXIS];
+    double rhat[EMCMOT_MAX_AXIS], ahat[EMCMOT_MAX_AXIS];
+    int active[EMCMOT_MAX_AXIS];
+    double rnorm = 0.0, anorm = 0.0, speed = 0.0, ahead, vcap = 1e99, acap = 1e99;
+    double vel_scale, acc_scale, stop_acc;
+    const double tiny = 1e-12;
+    int flags, any = 0, a, j, pinned = 0;
+
+    if (!kinematicsJacobian) { have_prev = 0; return; }
+    flags = emcmotStatus->switchkins_flags[emcmotStatus->switchkins_type];
+    if (flags >= 0 ? (flags & KINSTYPE_IDENTITY) != 0
+                   : emcmotConfig->kinType == KINEMATICS_IDENTITY) {
+        have_prev = 0;
+        return;
+    }
+    for (a = 0; a < EMCMOT_MAX_AXIS; a++) {
+        active[a] = axis_teleop_request(a, &dir[a], &vreq[a], &areq[a]);
+        if (active[a]) {
+            double v = axis_get_teleop_vel_cmd(a);
+            any = 1;
+            rnorm += vreq[a] * vreq[a];
+            anorm += areq[a] * areq[a];
+            speed += v * v;
+        }
+    }
+    if (!any) { have_prev = 0; return; }
+    rnorm = sqrt(rnorm);
+    anorm = sqrt(anorm);
+    speed = sqrt(speed);
+    if (rnorm < tiny || anorm < tiny) { have_prev = 0; return; }
+    for (j = 0; j < NO_OF_KINS_JOINTS; j++) { joint_pos[j] = joints[j].pos_cmd; }
+    if (kinematicsJacobian(joint_pos, &emcmotStatus->carte_pos_cmd, jac, &iflags) != 0) {
+        for (a = 0; a < EMCMOT_MAX_AXIS; a++) {
+            if (active[a]) { axis_teleop_cap(a, vreq[a], areq[a]); }
+        }
+        have_prev = 0;
+        return;
+    }
+    /* the direction the jog was asked in, and the one the planners
+       accelerate in, each at its own limit */
+    for (a = 0; a < EMCMOT_MAX_AXIS; a++) {
+        rhat[a] = active[a] ? dir[a] * vreq[a] / rnorm : 0.0;
+        ahat[a] = active[a] ? dir[a] * areq[a] / anorm : 0.0;
+    }
+    /* the path the planners need to stop from the speed they are at,
+       at the acceleration they were left last cycle */
+    ahead = speed * speed / (2.0 * anorm * acc_scale_prev);
+    for (j = 0; j < NO_OF_KINS_JOINTS; j++) {
+        double rate = 0.0, change = 0.0, cap;
+        for (a = 0; a < EMCMOT_MAX_AXIS; a++) {
+            rate += jac[j][a] * rhat[a];
+            if (have_prev) { change += (jac[j][a] - jac_prev[j][a]) * rhat[a]; }
+        }
+        rate = fabs(rate);
+        /* how the rate changes per unit of path, from the last cycle */
+        change = (have_prev && speed > tiny) ? fabs(change) / (speed * period) : 0.0;
+        if (rate > tiny) {
+            cap = joints[j].vel_limit / (rate + change * ahead);
+            if (cap < vcap) { vcap = cap; }
+        }
+        if (change > tiny) {
+            cap = sqrt(joints[j].acc_limit / (2.0 * change));
+            if (cap < vcap) { vcap = cap; }
+        }
+        joint_pos[j] = change;      /* kept for the acceleration pass */
+    }
+    for (j = 0; j < NO_OF_KINS_JOINTS; j++) {
+        double arate = 0.0, cap;
+        for (a = 0; a < EMCMOT_MAX_AXIS; a++) { arate += jac[j][a] * ahat[a]; }
+        arate = fabs(arate);
+        if (arate > tiny) {
+            cap = (joints[j].acc_limit - joint_pos[j] * vcap * vcap) / arate;
+            if (cap < acap) { acap = cap; }
+        }
+    }
+    /* the soft limits: a joint heading for one must still be able to stop
+       at it, at half the acceleration the planners are left, and gets no
+       further than it in one cycle.  A jog that has come to rest against
+       one ends there, as a jog of a slide ends at its axis limit, and a
+       jog away from it is free.  The room is read from where the planners
+       have taken the joint, not from the interpolated command that follows
+       it a few cycles behind, and a ten-millionth of the joint's range
+       short, for the curve of the path over the last step; within one
+       more the jog is at rest there */
+    stop_acc = 0.5 * (acap < anorm ? acap : anorm);
+    for (j = 0; j < NO_OF_KINS_JOINTS; j++) {
+        double rate = 0.0, room, margin, cap;
+        if (!GET_JOINT_ACTIVE_FLAG(&joints[j]) || !get_homed(j)) { continue; }
+        for (a = 0; a < EMCMOT_MAX_AXIS; a++) { rate += jac[j][a] * rhat[a]; }
+        if (fabs(rate) < tiny) { continue; }
+        room = rate > 0.0 ? joints[j].max_pos_limit - joints[j].coarse_pos
+                          : joints[j].coarse_pos - joints[j].min_pos_limit;
+        margin = 1e-7 * (joints[j].max_pos_limit - joints[j].min_pos_limit);
+        room -= margin;
+        if (room <= margin) {
+            cap = 0.0;
+        } else {
+            cap = sqrt(2.0 * stop_acc * room / fabs(rate));
+            if (room / (fabs(rate) * period) < cap) { cap = room / (fabs(rate) * period); }
+        }
+        if (cap < vcap) {
+            vcap = cap;
+            pinned = cap < tiny;
+        }
+    }
+    vel_scale = vcap / rnorm;
+    acc_scale = acap / anorm;
+    if (vel_scale > 1.0) { vel_scale = 1.0; }
+    if (acc_scale > 1.0) { acc_scale = 1.0; }
+    if (acc_scale < 1e-6) { acc_scale = 1e-6; }
+    for (a = 0; a < EMCMOT_MAX_AXIS; a++) {
+        if (active[a]) { axis_teleop_cap(a, vel_scale * vreq[a], acc_scale * areq[a]); }
+    }
+    if (pinned && speed < tiny) { axis_jog_abort_all(0); }
+    for (j = 0; j < EMCMOT_MAX_JOINTS; j++) {
+        for (a = 0; a < EMCMOT_MAX_AXIS; a++) { jac_prev[j][a] = jac[j][a]; }
+    }
+    have_prev = 1;
+    acc_scale_prev = acc_scale;
+} // teleop_joint_cap()
+
 static void get_pos_cmds(long period)
 {
     int joint_num, result;
@@ -1427,18 +1670,73 @@ static void get_pos_cmds(long period)
                 emcmotStatus->syncOverrunSpindle = 0;
                 SET_MOTION_ERROR_FLAG(1);
             }
+
+	    if (tpGetJointPos(&emcmotInternal->coord_tp, positions) > 0) {
+		/* a joint interpolated segment: the planner hands out the
+		   joints and the forward kinematics says where the tool is,
+		   for status and for the display; nothing is inverted, and
+		   the planner's own position is the chord between the ends.
+		   The joints are commanded either way; a forward that fails,
+		   as an iterating one can at a singularity, leaves the last
+		   solved position reported rather than an unsolved one */
+		EmcPose pose = emcmotStatus->carte_pos_cmd;
+		if (kinematicsForward(positions, &pose, &fflags, &iflags) == 0) {
+		    emcmotStatus->carte_pos_cmd = pose;
+		    emcmotStatus->carte_pos_cmd_ok = 1;
+		} else {
+		    emcmotStatus->carte_pos_cmd_ok = 0;
+		}
+		result = 0;
+	    } else {
+	    /* a joint interpolated segment that ended this cycle is gone
+	       from the queue: its end joints seed the inverse, since the
+	       modules that read their rotary angles from the seed would
+	       otherwise get last cycle's */
+	    int joint_end_fresh = tpTakeJointEnd(&emcmotInternal->coord_tp, positions);
             /* get new commanded traj pos */
             tpGetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
 
-            if (axis_update_coord_with_bound(pcmd_p, servo_period)) {
+            if (tpJointSegmentsQueued(&emcmotInternal->coord_tp)) {
+                /* an external offset cannot ride on a joint interpolated
+                   segment: its joints were solved without one, and the
+                   queue refused the segment while one was applied.  A
+                   request that arrives while one is queued waits here,
+                   unplanned, and ramps in at its own limits once the last
+                   joint segment is done, instead of landing as a step at
+                   the segment's ends */
+            } else if (axis_update_coord_with_bound(pcmd_p, servo_period)) {
                 ext_offset_coord_limit = 1;
             } else {
                 ext_offset_coord_limit = 0;
             }
 
-	    /* OUTPUT KINEMATICS - convert to joints in local array */
-	    result = kinematicsInverse(&emcmotStatus->carte_pos_cmd, positions,
-		&iflags, &fflags);
+	    /* OUTPUT KINEMATICS - convert to joints in local array, or
+	       hold the joints a joint interpolated segment ended on while
+	       the planner stays at the point they put the machine on */
+	    if (joint_end_fresh) {
+		EmcPose at = emcmotStatus->carte_pos_cmd;
+		joint_hold_valid = 0;
+		if (kinematicsForward(positions, &at, &fflags, &iflags) == 0
+		    && same_carte_pos(&at, &emcmotStatus->carte_pos_cmd)) {
+		    for (joint_num = 0; joint_num < EMCMOT_MAX_JOINTS; joint_num++) {
+			joint_hold[joint_num] = positions[joint_num];
+		    }
+		    joint_hold_pose = emcmotStatus->carte_pos_cmd;
+		    joint_hold_valid = 1;
+		}
+	    }
+	    if (joint_hold_valid
+		&& same_carte_pos(&joint_hold_pose, &emcmotStatus->carte_pos_cmd)) {
+		for (joint_num = 0; joint_num < EMCMOT_MAX_JOINTS; joint_num++) {
+		    positions[joint_num] = joint_hold[joint_num];
+		}
+		result = 0;
+	    } else {
+		joint_hold_valid = 0;
+		result = kinematicsInverse(&emcmotStatus->carte_pos_cmd, positions,
+		    &iflags, &fflags);
+	    }
+	    }
 	    if(result == 0)
 	    {
 		/* copy to joint structures and spline them up */
@@ -1458,6 +1756,11 @@ static void get_pos_cmds(long period)
 		       that fail soft limits, but we'll abort at the end of
 		       this cycle so it doesn't really matter */
 		    cubicAddPoint(&(joint->cubic), joint->coarse_pos);
+		}
+		/* a non-finite joint left joint 0 without its point, so the
+		   loop would ask for it forever and hang the servo thread */
+		if (joint_num < NO_OF_KINS_JOINTS) {
+		    break;
 		}
 	    }
 	    else
@@ -1500,6 +1803,7 @@ static void get_pos_cmds(long period)
 	break;
 
     case EMCMOT_MOTION_TELEOP:
+        teleop_joint_cap(servo_period);
         ext_offset_teleop_limit = axis_calc_motion(servo_period);
         if (!ext_offset_teleop_limit) {
             ext_offset_coord_limit = 0; //in case was set in prior coord motion
@@ -2273,6 +2577,9 @@ static void update_status(void)
     }
 
     emcmotStatus->jogging_active = hal_get_bool(emcmot_hal_data->jog_is_active);
+    if (get_homing_is_active() && !emcmotStatus->homing_active) {
+        emcmotStatus->homing_runs++;
+    }
     emcmotStatus->homing_active = get_homing_is_active();
 
     /*! \todo FIXME - the rest of this function is stuff that was apparently

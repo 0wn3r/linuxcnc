@@ -55,10 +55,12 @@ GLES_CONTEXT_VERSION = (3, 1)
 import glnav
 
 import rs274.glcanon
+import rs274.glcanon_gl
 import rs274.interpret
 from rs274.program_time import MachineLimits, ProgramTime, format_seconds
 import linuxcnc
 import gcode
+import axis_kinds
 import preview_helpers
 
 import logging
@@ -132,6 +134,7 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
         self.connect('resize', self.reshape)
         # 'map', not 'map-event': a GLArea has no window of its own to get one.
         self.connect('map', self.map)
+        self.connect('unmap', self.unmap)
         self.connect('render', self.render)
         self.connect('motion-notify-event', self.motion)
         self.connect('button-press-event', self.pressed)
@@ -150,6 +153,7 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
  
 
         self.fingerprint = ()
+        self.poll_timer = None
 
         self.lat = 0
         self.minlat = -90
@@ -179,9 +183,9 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
         self.use_default_controls = True
         self.mouse_btn_mode = 0
 
-        self.a_axis_wrapped = self.inifile.getbool("AXIS_A", "WRAPPED_ROTARY", fallback=False)
-        self.b_axis_wrapped = self.inifile.getbool("AXIS_B", "WRAPPED_ROTARY", fallback=False)
-        self.c_axis_wrapped = self.inifile.getbool("AXIS_C", "WRAPPED_ROTARY", fallback=False)
+        # which axes are angles, and which of those wrap, as the INI says
+        self.axis_angular = axis_kinds.angular(self.inifile)
+        self.axis_wrapped = axis_kinds.wrapped(self.inifile)
 
         live_axis_count = 0
         for i,j in enumerate("XYZABCUVW"):
@@ -276,6 +280,7 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
 
     def render(self, area=None, context=None):
         if not self.initialised: return True
+        self.update_hidpi()
         if self.perspective: self.redraw_perspective()
         else: self.redraw_ortho()
 
@@ -292,15 +297,25 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
     def clear_live_plotter(self):
         self.logger.clear()
 
+    # 'map' fires every time the widget is shown again, eg when gmoccapy
+    # leaves its settings page, so only start the poll if it is not running.
     def map(self, *args):
-        GLib.timeout_add(50, self.poll)
+        if self.poll_timer is None:
+            self.poll_timer = GLib.timeout_add(50, self.poll)
+
+    # Nothing to draw while hidden, so stop polling.
+    def unmap(self, *args):
+        if self.poll_timer is not None:
+            GLib.source_remove(self.poll_timer)
+            self.poll_timer = None
 
     def poll(self):
         s = self.stat
         try:
             s.poll()
         except:
-            return
+            self.poll_timer = None
+            return False
         fingerprint = (self.logger.npts, self.soft_limits(),
             s.actual_position, s.joint_actual_position,
             s.homed, s.g5x_offset, s.g92_offset, s.limit, s.tool_in_spindle,
@@ -310,7 +325,6 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
             self.fingerprint = fingerprint
             self.queue_render()
 
-        # return self.visible
         return True
 
     @rs274.glcanon.with_context
@@ -333,14 +347,32 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
             return
         self._current_file = None
 
-        self.font_base, width, linespace = glnav.use_pango_font('monospace 16', 0, 128)
-        self.font_linespace = linespace
-        self.font_charwidth = width
+        self._font_scale = None
+        self.update_hidpi()
         rs274.glcanon.GlCanonDraw.realize(self)
 
         self.swapbuffers()
 
         if s.file: self.load()
+
+    def update_hidpi(self):
+        """Follow the window's scale factor (HiDPI): the GL framebuffer is in
+        device pixels, so line widths, the overlay font and its icons are
+        scaled by it.  Checked every frame, since the factor changes when the
+        window moves to a screen with a different scale.  Needs the context.
+        """
+        scale = self.get_scale_factor()
+        rs274.glcanon_gl.set_line_scale(scale)
+        if scale == self._font_scale:
+            return
+        old = getattr(self, 'font_base', None)
+        self.font_base, width, linespace = glnav.use_pango_font(
+            'monospace 16', 0, 128, scale=scale)
+        self.font_linespace = linespace
+        self.font_charwidth = width
+        self._font_scale = scale
+        if old is not None and hasattr(old, 'delete'):
+            old.delete()
 
     def set_current_view(self):
         if self.current_view not in ['p', 'x', 'y', 'y2', 'z', 'z2']:
@@ -367,8 +399,8 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
             if parameter:
                 shutil.copy(parameter, temp_parameter)
             canon.parameter_file = temp_parameter
-            initcodes = preview_helpers.create_unitcode_and_initcode(s, self.inifile)
-            result, seq = self.load_preview(filename, canon, *initcodes)
+            initcodes = preview_helpers.preview_initcodes(s, self.inifile)
+            result, seq = self.load_preview(filename, canon, initcodes)
             if result > gcode.MIN_ERROR:
                 self.report_gcode_error(result, seq, filename)
             self.calculate_gcode_properties(canon)
@@ -394,7 +426,7 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
                 unit = self.stat.linear_units
             lu = (unit or 1) * 25.4
 
-            lus = [lu, lu, lu, 1, 1, 1, lu, lu, lu]
+            lus = [1 if angular else lu for angular in self.axis_angular]
             return [a*b for a, b in zip(pos, lus)]
 
         props = {}
@@ -504,14 +536,11 @@ class Gremlin(Gtk.GLArea,rs274.glcanon.GlCanonDraw,glnav.GlNavBase):
     def is_lathe(self): return self.lathe_option
     def is_foam(self): return self.foam_option
     def get_current_tool(self):
-        for i in self.stat.tool_table:
-            if i[0] == self.stat.tool_in_spindle:
-                return i
+        tool = self.stat.loaded_tool
+        if tool[0] == self.stat.tool_in_spindle:
+            return tool
     def get_highlight_line(self): return self.highlight_line
 
-    def get_a_axis_wrapped(self): return self.a_axis_wrapped
-    def get_b_axis_wrapped(self): return self.b_axis_wrapped
-    def get_c_axis_wrapped(self): return self.c_axis_wrapped
 
     def get_font_info(self):
         return self.font_charwidth, self.font_linespace, self.font_base

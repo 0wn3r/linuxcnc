@@ -22,8 +22,8 @@
 
 #include <linuxcnc.h>           // INCH_PER_MM
 #include <inifile.hh>
-#include "nml_intf/emc_nml.hh"
-#include "libnml/nml/nml_oi.hh"            // NML_ERROR_LEN
+#include <nml_intf/emc_nml.hh>
+#include <libnml/nml/nml_oi.hh>            // NML_ERROR_LEN
 #include "unitenum.hh"
 
 static inline bool CLOSE(double a, double b, double eps)
@@ -89,6 +89,8 @@ extern int emcCommandWaitDone();
 extern int emcCommandSend(RCS_CMD_MSG & cmd);
 extern double convertLinearUnits(double u);
 extern double convertAngularUnits(double u);
+// a value of axis 0 X to 8 W, by its [AXIS_<letter>] TYPE
+extern double convertAxisUnits(int axis, double u);
 extern int sendDebug(int level);
 extern int sendEstop();
 extern int sendEstopReset();
